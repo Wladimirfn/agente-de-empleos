@@ -1,0 +1,85 @@
+project:
+  name: employment-agent
+  type: monorepo
+  workspace_manager: npm-workspaces
+  description: |
+    Asistente local de búsqueda de empleo con IA. Analiza CV, monitorea
+    portales, prepara postulaciones (modo asistido) y se repara solo
+    cuando los portales cambian.
+
+sdd:
+  version: 1
+  execution_mode: interactive
+  artifact_store: both
+  chained_pr_strategy: force-chained
+  review_budget_lines: 400
+  preflight_captured_at: 2026-07-30
+  preflight_session: session-employment-agent-kickoff
+
+testing:
+  runner: vitest
+  framework: node
+  strict_tdd: true
+  coverage_threshold: 80
+  commands:
+    test: vitest run
+    test_watch: vitest
+    test_coverage: vitest run --coverage
+
+stack:
+  framework: astro
+  ui: react-islands
+  state_islands: nanostores
+  styling: tailwind
+  components: shadcn-ui
+  database: sqlite
+  orm: drizzle
+  worker_runtime: node
+  browser_automation: playwright
+  scheduling: node-cron
+  queue: sqlite-table
+  streaming: sse
+  pdf: pdf-lib
+  docx: docx
+  llm_provider: pluggable
+  llm_default_stub: deterministic-mock
+  credentials: keytar
+  browser_sessions: playwright-storage-state-encrypted
+
+invariants:
+  - id: assisted-mode-only
+    description: El agente prepara postulaciones, el usuario hace submit final.
+  - id: no-fabrication
+    description: Nunca se inventa información del candidato. Constraint de código, no solo prompt.
+  - id: worker-isolation
+    description: Worker corre en proceso separado del web. Si Playwright falla, dashboard no se cae.
+  - id: browser-pool-limit
+    description: Máximo 2-3 navegadores Playwright concurrentes.
+  - id: encrypted-sessions
+    description: Sesiones de navegador y credenciales se almacenan cifradas.
+  - id: human-loop
+    description: CAPTCHA, MFA, ClaveÚnica → estado 'requiere intervención', no auto-resolver.
+  - id: conservative-repair
+    description: Skills se reparan con cambios limitados a selectores. Lógica core requiere humano.
+
+phases:
+  - init
+  - explore
+  - proposal
+  - spec
+  - design
+  - tasks
+  - apply
+  - verify
+  - sync
+  - archive
+
+artifact_paths:
+  proposal: openspec/changes/initial-foundation/proposal.md
+  spec: openspec/changes/initial-foundation/spec.md
+  design: openspec/changes/initial-foundation/design.md
+  tasks: openspec/changes/initial-foundation/tasks.md
+  apply_progress: openspec/changes/initial-foundation/apply.md
+  verify_report: openspec/changes/initial-foundation/verify.md
+  sync_report: openspec/changes/initial-foundation/sync.md
+  archive: openspec/changes/initial-foundation/archive.md

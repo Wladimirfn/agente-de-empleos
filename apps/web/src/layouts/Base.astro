@@ -1,0 +1,56 @@
+---
+import '../styles/global.css';
+
+interface Props {
+  title?: string;
+  activeRoute?: string;
+}
+
+const { title = 'Employment Agent', activeRoute = '/' } = Astro.props;
+
+const navItems = [
+  { href: '/', label: 'Inicio', match: (r: string) => r === '/' },
+  { href: '/perfil', label: 'Perfil', match: (r: string) => r.startsWith('/perfil') },
+  { href: '/curriculums', label: 'Currículums', match: (r: string) => r.startsWith('/curriculums') },
+  { href: '/ofertas', label: 'Ofertas', match: (r: string) => r.startsWith('/ofertas') },
+  { href: '/postulaciones', label: 'Postulaciones', match: (r: string) => r.startsWith('/postulaciones') },
+  { href: '/plataformas', label: 'Plataformas', match: (r: string) => r.startsWith('/plataformas') },
+  { href: '/skills', label: 'Skills', match: (r: string) => r.startsWith('/skills') },
+  { href: '/actividad', label: 'Actividad', match: (r: string) => r.startsWith('/actividad') },
+  { href: '/errores', label: 'Errores', match: (r: string) => r.startsWith('/errores') },
+];
+
+const currentPath = Astro.url.pathname;
+---
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{title}</title>
+  </head>
+  <body class="min-h-screen">
+    <div class="flex min-h-screen">
+      <aside class="w-56 border-r border-border bg-background/50 p-4">
+        <h1 class="text-lg font-semibold mb-6">employment-agent</h1>
+        <nav class="flex flex-col gap-1">
+          {navItems.map((item) => (
+            <a
+              href={item.href}
+              class={`block rounded px-3 py-2 text-sm transition-colors ${
+                item.match(activeRoute)
+                  ? 'bg-accent/10 text-accent'
+                  : 'text-muted hover:bg-muted/10 hover:text-foreground'
+              }`}
+            >
+              {item.label}
+            </a>
+          ))}
+        </nav>
+      </aside>
+      <main class="flex-1 p-8 overflow-auto">
+        <slot />
+      </main>
+    </div>
+  </body>
+</html>

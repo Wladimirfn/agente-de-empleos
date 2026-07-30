@@ -1,0 +1,19 @@
+---
+import Base from '../../layouts/Base.astro';
+---
+<Base title="Currículums" activeRoute="/curriculums">
+  <h2 class="text-2xl font-semibold mb-4">Currículums</h2>
+  <p class="text-muted">Sube tu CV o completa el formulario manualmente.</p>
+  <div class="mt-6 grid grid-cols-2 gap-4">
+    <div class="rounded border border-border p-4">
+      <h3 class="font-semibold mb-2">Subir CV</h3>
+      <p class="text-sm text-muted mb-3">PDF o DOCX. Se extrae texto y se pre-rellena el formulario.</p>
+      <button class="rounded bg-accent px-4 py-2 text-background text-sm font-medium" disabled>Elegir archivo</button>
+    </div>
+    <div class="rounded border border-border p-4">
+      <h3 class="font-semibold mb-2">Completar manualmente</h3>
+      <p class="text-sm text-muted mb-3">Si no tenés CV a mano, completá los campos directamente.</p>
+      <a href="/curriculums?mode=manual" class="inline-block rounded border border-border px-4 py-2 text-sm">Abrir formulario</a>
+    </div>
+  </div>
+</Base>

@@ -1,0 +1,25 @@
+---
+import Base from '../layouts/Base.astro';
+---
+<Base title="Inicio" activeRoute="/">
+  <h2 class="text-2xl font-semibold mb-4">Inicio</h2>
+  <p class="text-muted">
+    Bienvenido a employment-agent. Esta es la versión inicial (foundation slice).
+    El dashboard está listo para mostrar actividad en vivo cuando el worker
+    esté corriendo.
+  </p>
+  <div class="mt-6 grid grid-cols-3 gap-4">
+    <div class="rounded border border-border p-4">
+      <h3 class="font-semibold mb-2">Worker</h3>
+      <p class="text-sm text-muted">Iniciar con <code class="text-accent">npm run dev:worker</code></p>
+    </div>
+    <div class="rounded border border-border p-4">
+      <h3 class="font-semibold mb-2">Web</h3>
+      <p class="text-sm text-muted">Iniciar con <code class="text-accent">npm run dev:web</code></p>
+    </div>
+    <div class="rounded border border-border p-4">
+      <h3 class="font-semibold mb-2">Ambos</h3>
+      <p class="text-sm text-muted">Iniciar con <code class="text-accent">npm run dev</code></p>
+    </div>
+  </div>
+</Base>

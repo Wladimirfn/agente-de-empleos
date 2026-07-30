@@ -1,0 +1,24 @@
+{
+  "name": "@employment-agent/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@employment-agent/database": "*",
+    "@employment-agent/domain": "*",
+    "@employment-agent/llm": "*",
+    "@employment-agent/skill-runtime": "*",
+    "node-cron": "^3.0.3",
+    "playwright": "^1.48.0"
+  },
+  "devDependencies": {
+    "@types/node-cron": "^3.0.11",
+    "tsx": "^4.19.0"
+  }
+}

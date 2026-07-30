@@ -1,0 +1,35 @@
+{
+  "name": "employment-agent",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "worker",
+    "skills/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n web,worker -c blue,green \"npm:dev:web\" \"npm:dev:worker\"",
+    "dev:web": "npm --workspace=apps/web run dev",
+    "dev:worker": "npm --workspace=worker run dev",
+    "build": "npm --workspace=apps/web run build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc -p tsconfig.base.json --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "concurrently": "^9.1.0",
+    "drizzle-kit": "^0.31.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0",
+    "@vitest/coverage-v8": "^2.1.0"
+  },
+  "dependencies": {
+    "drizzle-orm": "1.0.0-beta.16-c2458b2"
+  }
+}

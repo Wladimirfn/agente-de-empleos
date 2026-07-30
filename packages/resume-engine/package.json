@@ -1,0 +1,19 @@
+{
+  "name": "@employment-agent/resume-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@employment-agent/domain": "*",
+    "pdf-lib": "^1.17.1",
+    "docx": "^9.0.2"
+  }
+}

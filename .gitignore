@@ -1,0 +1,48 @@
+# Node
+node_modules/
+.npm/
+.pnpm-store/
+
+# Astro build output
+dist/
+.astro/
+
+# Local data and runtime
+data/
+storage/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Encrypted browser sessions (regenerable)
+storage/browser-sessions/
+
+# Generated CVs (contienen info personal)
+storage/generated/
+storage/curriculum/
+
+# Screenshots (pueden contener info personal)
+storage/screenshots/
+
+# SDD intermediate artifacts (kept in engram)
+openspec/changes/*/apply-progress.md
+
+# Pi runtime
+.atl/
