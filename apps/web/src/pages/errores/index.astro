@@ -1,20 +1,17 @@
 ---
 import Base from '../../layouts/Base.astro';
 import PageHeader from '../../components/ui/PageHeader.astro';
-import Card from '../../components/ui/Card.astro';
-import Badge from '../../components/ui/Badge.astro';
+import HealthDashboard from '../../components/islands/HealthDashboard';
 ---
 <Base title="Errores" activeRoute="/errores">
   <PageHeader
     title="Errores y reparaciones"
-    subtitle="Healthcheck de las skills. Las skills rotas aparecen acá para revisión humana."
+    subtitle="Estado de cada skill instalada. Las fallas sin reparar requieren revisión humana."
   />
 
-  <div class="space-y-3">
-    <Card title="example-platform" subtitle="Último healthcheck: pendiente (el worker aún no corrió)">
-      <div slot="actions">
-        <Badge variant="neutral">Sin datos</Badge>
-      </div>
-    </Card>
-  </div>
+  <HealthDashboard client:load />
+
+  <p class="mt-6 text-xs text-muted">
+    Datos en vivo: el dashboard hace polling a <code class="text-accent">/api/health</code> cada 5 segundos.
+  </p>
 </Base>
