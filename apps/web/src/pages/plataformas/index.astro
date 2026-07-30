@@ -1,16 +1,46 @@
 ---
 import Base from '../../layouts/Base.astro';
+import PageHeader from '../../components/ui/PageHeader.astro';
+import Card from '../../components/ui/Card.astro';
+import Badge from '../../components/ui/Badge.astro';
+import Button from '../../components/ui/Button.astro';
 ---
 <Base title="Plataformas" activeRoute="/plataformas">
-  <h2 class="text-2xl font-semibold mb-4">Plataformas</h2>
-  <p class="text-muted">Portales configurados para monitoreo.</p>
-  <div class="mt-6 rounded border border-border p-4">
-    <div class="flex items-center justify-between">
-      <div>
-        <h3 class="font-semibold">example-platform (stub)</h3>
-        <p class="text-sm text-muted">Plataforma de ejemplo — emite eventos fake para validar el flujo.</p>
+  <PageHeader
+    title="Plataformas"
+    subtitle="Portales configurados para monitoreo."
+  >
+    <Button slot="actions" variant="secondary" size="sm">Agregar plataforma</Button>
+  </PageHeader>
+
+  <div class="space-y-3">
+    <Card title="example-platform (stub)" subtitle="Plataforma de ejemplo — emite eventos fake para validar el flujo.">
+      <div slot="actions">
+        <Badge variant="success">Activa</Badge>
       </div>
-      <span class="rounded bg-green-500/20 text-green-400 px-2 py-1 text-xs">Activa</span>
-    </div>
+      <dl class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+        <div>
+          <dt class="text-muted">Último escaneo</dt>
+          <dd class="text-foreground">pendiente</dd>
+        </div>
+        <div>
+          <dt class="text-muted">Ofertas encontradas</dt>
+          <dd class="text-foreground">—</dd>
+        </div>
+        <div>
+          <dt class="text-muted">Compatibles</dt>
+          <dd class="text-foreground">—</dd>
+        </div>
+        <div>
+          <dt class="text-muted">Confiabilidad de la skill</dt>
+          <dd class="text-foreground">—</dd>
+        </div>
+      </dl>
+      <div slot="footer" class="flex items-center gap-2">
+        <Button variant="secondary" size="sm">Escanear ahora</Button>
+        <Button variant="ghost" size="sm">Ver skill</Button>
+        <Button variant="ghost" size="sm">Pausar</Button>
+      </div>
+    </Card>
   </div>
 </Base>

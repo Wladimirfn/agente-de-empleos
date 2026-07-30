@@ -1,0 +1,19 @@
+---
+interface Props {
+  variant?: 'success' | 'warning' | 'danger' | 'neutral' | 'accent';
+  class?: string;
+}
+
+const { variant = 'neutral', class: extraClass = '' } = Astro.props;
+const variants = {
+  success: 'bg-green-500/20 text-green-300 border-green-500/30',
+  warning: 'bg-yellow-500/20 text-yellow-300 border-yellow-500/30',
+  danger: 'bg-red-500/20 text-red-300 border-red-500/30',
+  neutral: 'bg-slate-500/20 text-slate-300 border-slate-500/30',
+  accent: 'bg-accent/20 text-accent border-accent/30',
+};
+const cls = `inline-flex items-center rounded border px-2 py-0.5 text-xs font-medium ${variants[variant]} ${extraClass}`;
+---
+<span class={cls}>
+  <slot />
+</span>

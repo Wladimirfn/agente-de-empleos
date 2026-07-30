@@ -1,0 +1,47 @@
+---
+interface Props {
+  label?: string;
+  name?: string;
+  type?: 'text' | 'email' | 'password' | 'number' | 'url' | 'date' | 'tel';
+  value?: string;
+  placeholder?: string;
+  required?: boolean;
+  disabled?: boolean;
+  hint?: string;
+  class?: string;
+}
+
+const {
+  label,
+  name,
+  type = 'text',
+  value,
+  placeholder,
+  required = false,
+  disabled = false,
+  hint,
+  class: extraClass = '',
+} = Astro.props;
+
+const id = name ? `field-${name}` : undefined;
+const cls = `w-full rounded border border-border bg-background/60 px-3 py-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50 ${extraClass}`;
+---
+<div class="space-y-1">
+  {label && (
+    <label for={id} class="block text-sm font-medium text-foreground">
+      {label}
+      {required && <span class="text-red-400 ml-0.5">*</span>}
+    </label>
+  )}
+  <input
+    id={id}
+    name={name}
+    type={type}
+    value={value}
+    placeholder={placeholder}
+    required={required}
+    disabled={disabled}
+    class={cls}
+  />
+  {hint && <p class="text-xs text-muted">{hint}</p>}
+</div>

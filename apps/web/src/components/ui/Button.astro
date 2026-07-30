@@ -1,0 +1,44 @@
+---
+interface Props {
+  variant?: 'primary' | 'secondary' | 'ghost' | 'danger';
+  size?: 'sm' | 'md';
+  href?: string;
+  type?: 'button' | 'submit' | 'reset';
+  disabled?: boolean;
+  class?: string;
+}
+
+const {
+  variant = 'primary',
+  size = 'md',
+  href,
+  type = 'button',
+  disabled = false,
+  class: extraClass = '',
+} = Astro.props;
+
+const base = 'inline-flex items-center justify-center font-medium rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
+const sizes = {
+  sm: 'px-3 py-1.5 text-xs',
+  md: 'px-4 py-2 text-sm',
+};
+const variants = {
+  primary: 'bg-accent text-slate-900 hover:bg-accent/90',
+  secondary: 'border border-border bg-background/50 text-foreground hover:bg-muted/10',
+  ghost: 'text-muted hover:text-foreground hover:bg-muted/10',
+  danger: 'bg-red-500/20 text-red-300 hover:bg-red-500/30',
+};
+
+const cls = `${base} ${sizes[size]} ${variants[variant]} ${extraClass}`;
+
+const isLink = typeof href === 'string' && !disabled;
+---
+{isLink ? (
+  <a href={href} class={cls}>
+    <slot />
+  </a>
+) : (
+  <button type={type} disabled={disabled} class={cls}>
+    <slot />
+  </button>
+)}
