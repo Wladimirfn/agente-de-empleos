@@ -64,11 +64,19 @@ export async function initDb(): Promise<void> {
 	getDb();
 }
 
+export function resolveMigrationsFolder(cwd = process.cwd()): string | null {
+	const candidates = [
+		path.resolve(cwd, 'drizzle/migrations'),
+		path.resolve(cwd, '../../drizzle/migrations'),
+	];
+	return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+}
+
 export async function runMigrations(): Promise<void> {
 	await initDb();
-	const migrationsFolder = path.resolve(process.cwd(), "drizzle/migrations");
-	if (fs.existsSync(migrationsFolder)) {
-		migrate(getDb(), { migrationsFolder });
+	const migrationsFolder = resolveMigrationsFolder();
+	if (migrationsFolder !== null) {
+		await migrate(getDb(), { migrationsFolder });
 	}
 }
 

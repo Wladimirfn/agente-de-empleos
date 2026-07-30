@@ -1,0 +1,9 @@
+---
+import Base from '../../layouts/Base.astro';
+import PageHeader from '../../components/ui/PageHeader.astro';
+import LLMSettings from '../../components/islands/LLMSettings';
+---
+<Base title="Configuración | Employment Agent" activeRoute="/configuracion">
+  <PageHeader title="Configuración" description="Seleccioná el proveedor y modelo usados por el asistente." />
+  <LLMSettings client:load />
+</Base>

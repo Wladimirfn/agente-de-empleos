@@ -30,6 +30,15 @@ describe('database client', () => {
     mod.closeDb();
   });
 
+  it('locates root migrations from a workspace working directory', async () => {
+    const mod = await import('../src/client.js');
+    const workspaceCwd = path.join(process.cwd(), 'apps', 'web');
+
+    expect(mod.resolveMigrationsFolder(workspaceCwd)).toBe(
+      path.join(process.cwd(), 'drizzle', 'migrations'),
+    );
+  });
+
   it('creates a sqlite file in the configured location', async () => {
     process.env.DATABASE_PATH = path.join(tmpDir, 'second.db');
     const mod = await import('../src/client.js?second=1');

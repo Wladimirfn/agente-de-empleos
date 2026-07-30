@@ -47,6 +47,7 @@ export interface MatchScore {
 
 export interface LLMProvider {
   readonly name: string;
+  readonly model?: string;
   parseResume(text: string): Promise<StructuredResume>;
   scoreMatch(profile: CandidateProfile, job: Job): Promise<MatchScore>;
   summarize(text: string): Promise<string>;
