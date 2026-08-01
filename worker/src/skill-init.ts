@@ -1,9 +1,57 @@
 import { registry } from '@employment-agent/skill-runtime';
+import { db } from '@employment-agent/database';
+import { platforms, platformSkills } from '@employment-agent/database/schema';
+import { eq } from 'drizzle-orm';
 import { examplePlatformSkill } from '../../skills/example-platform/index.js';
+import { laborumSkill } from '../../skills/laborum/index.js';
+import { computrabajoSkill } from '../../skills/computrabajo/index.js';
+import { indeedSkill } from '../../skills/indeed/index.js';
 
+async function ensurePlatform(slug: string, displayName: string): Promise<number> {
+  const existing = await db.select().from(platforms).where(eq(platforms.slug, slug)).limit(1);
+  if (existing[0]) return existing[0].id;
+  const inserted = await db
+    .insert(platforms)
+    .values({ slug, displayName, status: 'active' })
+    .returning({ id: platforms.id });
+  return inserted[0].id;
+}
+
+/**
+ * Register the deterministic skills in the in-memory registry. Synchronous
+ * on purpose: the registry guards against double registration by throwing,
+ * and the boot path relies on that synchronous contract.
+ *
+ * Also kicks off persistence of the registry into platform_skills (async,
+ * best-effort), so the web server (chat tools, platforms page) can tell
+ * which platforms have a deterministic scraper and which ones can only be
+ * scanned by the LLM browser agent.
+ */
 export function initializeSkills(): void {
   registry.register(examplePlatformSkill);
+  registry.register(laborumSkill);
+  registry.register(computrabajoSkill);
+  registry.register(indeedSkill);
   for (const skill of registry.list()) {
     console.log(`[skills] registered ${skill.slug} v${skill.version} — ${skill.displayName}`);
+  }
+  void persistRegisteredSkills();
+}
+
+async function persistRegisteredSkills(): Promise<void> {
+  for (const skill of registry.list()) {
+    try {
+      const platformId = await ensurePlatform(skill.slug, skill.displayName);
+      await db.insert(platformSkills).values({
+        platformId,
+        skillSlug: skill.slug,
+        version: skill.version,
+      }).onConflictDoUpdate({
+        target: [platformSkills.platformId, platformSkills.skillSlug],
+        set: { version: skill.version },
+      });
+    } catch (err) {
+      console.error(`[skills] failed to persist skill ${skill.slug}:`, err);
+    }
   }
 }

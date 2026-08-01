@@ -14,6 +14,7 @@
     "@employment-agent/domain": "*",
     "@employment-agent/llm": "*",
     "@employment-agent/skill-runtime": "*",
+    "@employment-agent/shared": "*",
     "node-cron": "^3.0.3",
     "playwright": "^1.48.0"
   },

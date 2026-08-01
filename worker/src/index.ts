@@ -1,3 +1,4 @@
+import './env.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { runMigrations, closeDb } from '@employment-agent/database';
@@ -25,13 +26,12 @@ function removePidFile(): void {
 
 async function main(): Promise<void> {
   console.log('[worker] starting...');
-  runMigrations();
+  await runMigrations();
   console.log('[worker] migrations applied');
 
   initializeSkills();
   registerBuiltinHandlers();
-  writePidFile();
-  startHeartbeat();
+  writePidFile();  startHeartbeat();
   startScheduler();
   console.log('[worker] running. Press Ctrl+C to stop.');
 
@@ -46,7 +46,7 @@ async function main(): Promise<void> {
     stopScheduler();
     stopHeartbeat();
     removePidFile();
-    closeDb();
+    await closeDb();
     process.exit(0);
   };
   process.on('SIGINT', () => void shutdown('SIGINT'));
