@@ -1,0 +1,15 @@
+{
+  "name": "@employment-agent/skill-computrabajo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./index.ts",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@employment-agent/skill-runtime": "*",
+    "@employment-agent/domain": "*",
+    "playwright": "^1.48.0"
+  }
+}

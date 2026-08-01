@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Trabajo de técnico - Computrabajo</title>
+</head>
+<body>
+  <main id="listaOffers">
+    <article class="box_offer" data-id="A1">
+      <h2>
+        <a class="js-o-link" href="/oferta/123">Téc. Mantención</a>
+      </h2>
+      <p>Empresa X · Santiago · 30-07-2026</p>
+    </article>
+
+    <article class="box_offer" data-id="A2">
+      <h2>
+        <a class="js-o-link" href="/oferta/456">Refrigeración Industrial</a>
+      </h2>
+      <p>Frioking · Valparaíso · 28-07-2026</p>
+    </article>
+
+    <!-- Malformed offer: missing data-id, must be skipped -->
+    <article class="box_offer">
+      <h2>
+        <a class="js-o-link" href="/oferta/789">Should be skipped</a>
+      </h2>
+      <p>Acme · Concepción · 27-07-2026</p>
+    </article>
+  </main>
+</body>
+</html>

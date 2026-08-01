@@ -1,0 +1,16 @@
+{
+  "name": "@employment-agent/skill-indeed",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./index.ts",
+  "scripts": {
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@employment-agent/skill-runtime": "*",
+    "@employment-agent/domain": "*",
+    "playwright": "^1.48.0"
+  }
+}

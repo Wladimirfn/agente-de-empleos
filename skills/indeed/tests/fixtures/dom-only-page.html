@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Técnico de mantención - Empleos | Indeed.cl</title>
+</head>
+<body>
+  <main>
+    <h1>Empleos de Técnico de mantención</h1>
+    <div id="resultsCol">
+
+      <!--
+        No mosaic script on this page — the parser must fall back to DOM.
+        This is the path Unit 1 covers for sites that have stripped the
+        mosaic JSON but still render `a.jcs-JobTitle` cards.
+      -->
+
+      <ul class="jobsearch-ResultsList">
+        <li class="slider_item" data-testid="slider_item">
+          <a class="jcs-JobTitle" href="/rc/clk?jk=dom111111aaa&from=serp&vjk=1">
+            Técnico Eléctrico
+          </a>
+          <span data-testid="company-name">DomEmpresa Uno</span>
+          <span data-testid="text-location">Santiago</span>
+          <span data-testid="myjobs-unified-Date">hace 2 días</span>
+        </li>
+
+        <li class="slider_item" data-testid="slider_item">
+          <a class="jcs-JobTitle" href="/rc/clk?jk=dom222222bbb&from=serp">
+            Operario de Mantención
+          </a>
+          <span data-testid="company-name">DomEmpresa Dos</span>
+          <span data-testid="text-location">Antofagasta</span>
+          <span data-testid="myjobs-unified-Date">Hoy</span>
+        </li>
+
+        <li class="slider_item" data-testid="slider_item">
+          <a class="jcs-JobTitle" href="/pagead/clk?jk=dom333333ccc&from=serp">
+            Bodeguero Refrigeración
+          </a>
+          <span data-testid="company-name">DomEmpresa Tres</span>
+          <!-- No text-location on purpose: parser must leave location undefined -->
+          <span data-testid="myjobs-unified-Date">hace 5 días</span>
+        </li>
+
+        <!--
+          Malformed row: link exists but lacks an href → must be skipped.
+        -->
+        <li class="slider_item">
+          <a class="jcs-JobTitle">No href</a>
+        </li>
+
+        <!--
+          Malformed row: link has href but no usable jk → must be skipped.
+        -->
+        <li class="slider_item">
+          <a class="jcs-JobTitle" href="/some/other/page">Title with no jk</a>
+          <span data-testid="company-name">Bad</span>
+        </li>
+      </ul>
+    </div>
+  </main>
+</body>
+</html>

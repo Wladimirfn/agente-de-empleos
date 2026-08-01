@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Técnico de mantención - Empleos | Indeed.cl</title>
+  <meta name="description" content="Buscar ofertas de técnico de mantención en cl.indeed.com" />
+</head>
+<body>
+  <main>
+    <h1>Empleos de Técnico de mantención</h1>
+    <div id="resultsCol">
+
+      <!--
+        Indeed's React tree ships its job state as a JSON blob inside a
+        <script id="mosaic-provider-script"> tag. The parser pulls this
+        blob out via `document.getElementById('mosaic-provider-script')`
+        and walks `mosaicProviderJobCardsModel.jobCards[]`.
+      -->
+      <script id="mosaic-provider-script">
+{
+  "mosaicProviderJobCardsModel": {
+    "jobCards": [
+      {
+        "jobcardUuid": "uuid-001",
+        "title": "Téc. Mantención Industrial",
+        "companyName": "Empresa ACME",
+        "formattedLocation": "Santiago, Región Metropolitana",
+        "viewJobTitle": "Téc. Mantención Industrial",
+        "viewJobLink": "https://cl.indeed.com/viewjob?jk=abc123def456",
+        "applyJobUrl": "https://cl.indeed.com/rc/clk?jk=abc123def456&from=serp&vjk=1",
+        "indeedApplyEnabled": true,
+        "relativeDate": "hace 1 día",
+        "datePublished": "2026-07-30"
+      },
+      {
+        "jobcardUuid": "uuid-002",
+        "title": "Refrigeración Industrial",
+        "companyName": "Frioking SpA",
+        "formattedLocation": "Valparaíso",
+        "viewJobTitle": "Refrigeración Industrial",
+        "viewJobLink": "https://cl.indeed.com/viewjob?jk=987fed654cba",
+        "applyJobUrl": "https://cl.indeed.com/rc/clk?jk=987fed654cba&from=serp",
+        "indeedApplyEnabled": false,
+        "relativeDate": "hace 3 días",
+        "datePublished": "2026-07-28"
+      },
+      {
+        "jobcardUuid": "uuid-003",
+        "title": "Eléctrico Mantenedor",
+        "companyName": "Servicios Eléctricos Ltda",
+        "formattedLocation": "Concepción, Biobío",
+        "viewJobTitle": "Eléctrico Mantenedor",
+        "viewJobLink": "https://cl.indeed.com/viewjob?jk=el3ctr1c0",
+        "applyJobUrl": "https://cl.indeed.com/pagead/clk?jk=el3ctr1c0&from=serp",
+        "indeedApplyEnabled": true,
+        "relativeDate": "Hoy",
+        "datePublished": "2026-07-31"
+      },
+      {
+        "jobcardUuid": "uuid-004-bad",
+        "title": "Malformed card - no jk anywhere",
+        "companyName": "Should be skipped",
+        "viewJobLink": "https://cl.indeed.com/viewjob",
+        "applyJobUrl": "https://cl.indeed.com/rc/clk?from=serp"
+      }
+    ]
+  }
+}
+      </script>
+
+      <!--
+        The page also renders DOM cards; we leave them present so we can prove
+        that the mosaic path WINS over DOM (RED #1 — primary, not chain).
+      -->
+      <ul class="jobsearch-ResultsList">
+        <li class="slider_item">
+          <a class="jcs-JobTitle" href="/rc/clk?jk=dom01dom01dom&from=serp">DOM card 1 (should be ignored)</a>
+          <span data-testid="company-name">Ignored Co</span>
+          <span data-testid="text-location">Ignored City</span>
+        </li>
+      </ul>
+    </div>
+  </main>
+</body>
+</html>
