@@ -1,46 +1,7 @@
 ---
 import Base from '../../layouts/Base.astro';
-import PageHeader from '../../components/ui/PageHeader.astro';
-import Card from '../../components/ui/Card.astro';
-import Badge from '../../components/ui/Badge.astro';
-import Button from '../../components/ui/Button.astro';
+import PlatformsPage from '../../components/islands/PlatformsPage.tsx';
 ---
 <Base title="Plataformas" activeRoute="/plataformas">
-  <PageHeader
-    title="Plataformas"
-    subtitle="Portales configurados para monitoreo."
-  >
-    <Button slot="actions" variant="secondary" size="sm">Agregar plataforma</Button>
-  </PageHeader>
-
-  <div class="space-y-3">
-    <Card title="example-platform (stub)" subtitle="Plataforma de ejemplo — emite eventos fake para validar el flujo.">
-      <div slot="actions">
-        <Badge variant="success">Activa</Badge>
-      </div>
-      <dl class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
-        <div>
-          <dt class="text-muted">Último escaneo</dt>
-          <dd class="text-foreground">pendiente</dd>
-        </div>
-        <div>
-          <dt class="text-muted">Ofertas encontradas</dt>
-          <dd class="text-foreground">—</dd>
-        </div>
-        <div>
-          <dt class="text-muted">Compatibles</dt>
-          <dd class="text-foreground">—</dd>
-        </div>
-        <div>
-          <dt class="text-muted">Confiabilidad de la skill</dt>
-          <dd class="text-foreground">—</dd>
-        </div>
-      </dl>
-      <div slot="footer" class="flex items-center gap-2">
-        <Button variant="secondary" size="sm">Escanear ahora</Button>
-        <Button variant="ghost" size="sm">Ver skill</Button>
-        <Button variant="ghost" size="sm">Pausar</Button>
-      </div>
-    </Card>
-  </div>
+  <PlatformsPage client:load />
 </Base>
