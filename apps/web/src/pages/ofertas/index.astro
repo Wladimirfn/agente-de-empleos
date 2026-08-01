@@ -1,10 +1,7 @@
 ---
 import Base from '../../layouts/Base.astro';
+import JobSearch from '../../components/islands/JobSearch';
 ---
 <Base title="Ofertas" activeRoute="/ofertas">
-  <h2 class="text-2xl font-semibold mb-4">Ofertas encontradas</h2>
-  <p class="text-muted">Las ofertas aparecerán aquí cuando el worker escanee los portales configurados.</p>
-  <div class="mt-6 rounded border border-border p-6 text-center text-muted">
-    Sin ofertas todavía. (Próximo sprint: chiletrabajos-skill y computrabajo-skill)
-  </div>
+  <JobSearch client:load />
 </Base>

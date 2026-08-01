@@ -1,0 +1,9 @@
+---
+import Base from '../../layouts/Base.astro';
+import JobsBrowser from '../../components/islands/JobsBrowser.tsx';
+
+const platform = Astro.url.searchParams.get('platform') ?? undefined;
+---
+<Base title="Todas las ofertas" activeRoute="/ofertas">
+  <JobsBrowser client:load platformFilter={platform} />
+</Base>
