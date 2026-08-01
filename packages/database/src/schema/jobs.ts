@@ -56,3 +56,21 @@ export const applicationEvents = sqliteTable('application_events', {
   idIdx: index('events_id_idx').on(t.id),
   occurredAtIdx: index('events_occurred_at_idx').on(t.occurredAt),
 }));
+
+/**
+ * User feedback on LLM match scores. When the user says "this is/isn't
+ * compatible", we store the correction. Future scoring runs inject these
+ * as few-shot examples so the LLM learns from past verdicts.
+ */
+export const matchFeedback = sqliteTable('match_feedback', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  jobId: integer('job_id').notNull().references(() => jobs.id, { onDelete: 'cascade' }),
+  profileId: integer('profile_id').notNull().references(() => candidateProfiles.id, { onDelete: 'cascade' }),
+  originalScore: real('original_score').notNull(),
+  userVerdict: text('user_verdict', { enum: ['compatible', 'not_compatible'] }).notNull(),
+  userNote: text('user_note'),
+  createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (t) => ({
+  profileIdx: index('match_feedback_profile_idx').on(t.profileId, t.userVerdict),
+  jobIdx: index('match_feedback_job_idx').on(t.jobId),
+}));
