@@ -46,3 +46,13 @@ openspec/changes/*/apply-progress.md
 
 # Pi runtime
 .atl/
+.codegraph/
+
+# Local UI iteration artifacts (root-level screenshots / one-off pages)
+/*.png
+/page.html
+/test-regex.js
+/coverage/
+
+# Playwright MCP local cache
+.playwright-mcp/
