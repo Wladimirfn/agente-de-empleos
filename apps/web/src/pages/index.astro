@@ -1,37 +1,7 @@
 ---
 import Base from '../layouts/Base.astro';
-import PageHeader from '../components/ui/PageHeader.astro';
-import Card from '../components/ui/Card.astro';
-import StatCard from '../components/ui/StatCard.astro';
-import Button from '../components/ui/Button.astro';
+import AgentChat from '../components/islands/AgentChat';
 ---
-<Base title="Inicio" activeRoute="/">
-  <PageHeader
-    title="Inicio"
-    subtitle="Resumen del agente y accesos rápidos."
-  >
-    <Button slot="actions" href="/actividad" variant="secondary" size="sm">Ver actividad</Button>
-  </PageHeader>
-
-  <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-    <StatCard label="Worker" value="activo" hint="npm run dev:worker" />
-    <StatCard label="Web" value="activo" hint="npm run dev:web" />
-    <StatCard label="Plataformas" value="1" hint="example-platform (stub)" trend="flat" />
-    <StatCard label="Tests" value="44/44" trend="up" hint="Vitest" />
-  </div>
-
-  <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-    <Card title="Levantar todo">
-      Arrancá web + worker en paralelo con <code class="text-accent">npm run dev</code>.
-      El dashboard abre en <code class="text-accent">http://localhost:3000</code>.
-    </Card>
-    <Card title="Solo web">
-      Útil para iterar UI sin el worker. <code class="text-accent">npm run dev:web</code>.
-      El SSE quedará inactivo hasta que el worker arranque.
-    </Card>
-    <Card title="Solo worker">
-      Para verificar el ciclo de cron y los eventos sin gastar CPU en Astro.
-      <code class="text-accent">npm run dev:worker</code>.
-    </Card>
-  </div>
+<Base title="Asesor laboral" activeRoute="/">
+  <AgentChat client:load />
 </Base>
