@@ -45,8 +45,21 @@ describe('LLM settings DTOs', () => {
         model: 'llama3.2',
         baseUrl: 'http://localhost:11434/v1',
         updatedAt: '2026-07-30 12:00:00',
+        hasKey: false,
       },
     });
+  });
+
+  it('reports credential detection as a boolean without exposing the key', () => {
+    const dto = toLLMSettingsDto({
+      provider: 'openai',
+      model: 'gpt-4o-mini',
+      baseUrl: null,
+      updatedAt: '2026-07-30 12:00:00',
+    }, true);
+
+    expect(dto.settings?.hasKey).toBe(true);
+    expect(JSON.stringify(dto)).not.toContain('sk-');
   });
 
   it('returns a structured, secret-free unsupported connection result', () => {

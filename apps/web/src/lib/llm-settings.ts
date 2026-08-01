@@ -2,6 +2,8 @@ export const SUPPORTED_LLM_PROVIDERS = [
   'openai',
   'anthropic',
   'gemini',
+  'groq',
+  'nvidia',
   'ollama',
   'minimax',
   'kimi',
@@ -64,7 +66,7 @@ export function parseLLMSettingsInput(input: unknown): ParseResult {
   };
 }
 
-export function toLLMSettingsDto(row: StoredSettings | null) {
+export function toLLMSettingsDto(row: StoredSettings | null, hasKey = false) {
   if (!row) return { status: 'not-configured' as const, settings: null };
   return {
     status: 'configured' as const,
@@ -73,6 +75,7 @@ export function toLLMSettingsDto(row: StoredSettings | null) {
       model: row.model,
       baseUrl: row.baseUrl,
       updatedAt: row.updatedAt,
+      hasKey,
     },
   };
 }
