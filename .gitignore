@@ -3,6 +3,9 @@ node_modules/
 .npm/
 .pnpm-store/
 
+# TypeScript build cache
+*.tsbuildinfo
+
 # Astro build output
 dist/
 .astro/
@@ -19,6 +22,8 @@ storage/
 logs/
 *.log
 npm-debug.log*
+playwright-report/
+test-results/
 
 # Editor / OS
 .vscode/
@@ -26,10 +31,12 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 
-# Environment
+# Environment (copiar .env.example a .env)
 .env
 .env.local
 .env.*.local
+.env.production
+.env.development
 
 # Encrypted browser sessions (regenerable)
 storage/browser-sessions/
@@ -56,3 +63,10 @@ openspec/changes/*/apply-progress.md
 
 # Playwright MCP local cache
 .playwright-mcp/
+
+# Herramientas de IA locales (no compartir índices ni cachés)
+.codex/
+.agent/
+.claude/
+.sweep/
+

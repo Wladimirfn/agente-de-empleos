@@ -151,7 +151,7 @@ export default function LLMSettings() {
         <div className="rounded border border-border p-3 text-sm">
           <strong>Credenciales para {labels[provider]}:</strong>{' '}
           {hasKey ? 'detectadas en .env' : 'no detectadas'}. Las claves se configuran en el archivo
-          <code className="text-accent"> .env</code> del repositorio (ver env.example); nunca se muestran ni se editan aquí.
+          <code className="text-accent"> .env</code> del repositorio (ver .env.example); nunca se muestran ni se editan aquí.
         </div>
         <button type="submit" disabled={state === 'loading' || state === 'saving'} className="rounded bg-accent px-4 py-2 text-background disabled:opacity-50">
           {state === 'saving' ? 'Guardando…' : 'Guardar configuración'}

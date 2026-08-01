@@ -38,7 +38,7 @@ employment-agent/
 │   └── example-platform/   # Skill stub para desarrollo (5 fake jobs por scan)
 ├── data/                   # SQLite local (gitignored)
 ├── storage/                # CVs, screenshots, sesiones (gitignored)
-├── drizzle/                # Migraciones (gitignored)
+├── drizzle/                # Migraciones Drizzle versionadas (NO ignoradas)
 └── openspec/
     └── changes/
         └── initial-foundation/   # Spec, design, tasks, apply, verify, archive
@@ -65,3 +65,116 @@ Más detalle en `openspec/changes/initial-foundation/design.md` y en engram (top
 - Toda propuesta pasa por SDD con gentle-ai: `openspec/changes/{nombre}/`.
 - Tests con Vitest (TDD estricto).
 - Reviews por debajo de 400 líneas por PR (`openspec/config.yaml`).
+- Ver `AGENTS.md` para las convenciones obligatorias de trabajo con agentes IA.
+
+---
+
+# Desarrollo desde varios computadores
+
+Este proyecto está preparado para trabajar desde **varios PC** y con **varias IA
+en paralelo**, sin pisarse los cambios. La rama principal es `main` y está
+protegida: todo cambio entra por **Pull Request**. Detalle completo en
+[`docs/MULTI_PC_WORKFLOW.md`](docs/MULTI_PC_WORKFLOW.md).
+
+## Requisitos
+
+- **Node 22 LTS** (ver `.nvmrc`). Con `nvm`: `nvm use`.
+- **Git** reciente (2.30+).
+- `npm` (viene con Node).
+- Opcional: [GitHub CLI](https://cli.github.com/) (`gh`) para abrir PRs desde la terminal.
+
+## Instalación
+
+```bash
+npm install
+```
+
+## Configuración de `.env`
+
+```bash
+# Linux/macOS
+cp .env.example .env
+# Windows
+copy .env.example .env
+```
+
+Completá los valores localmente. `.env` está en `.gitignore`: nunca se sube.
+
+## Inicio del proyecto
+
+```bash
+npm run dev          # Astro web (3000) + worker en paralelo
+npm test             # Vitest
+```
+
+## Ejecución de pruebas
+
+```bash
+npm test             # suite completa
+npm run typecheck    # chequeo de tipos
+npm run build        # build de Astro
+npm run db:migrate   # aplicar migraciones de la base de datos
+```
+
+## Migraciones de base de datos
+
+- Las migraciones Drizzle están **versionadas** en `drizzle/migrations/`.
+- Después de cada `git pull` o al clonar en un PC nuevo: `npm run db:migrate`.
+- Para cambios de esquema: editá `packages/database/src/schema/`, luego
+  `npm run db:generate` para crear la migración nueva. **Nunca** borres ni
+  regeneres migraciones existentes.
+- La base local (`data/*.db`) está gitignored; cada PC reconstruye la suya.
+
+## Creación de una rama
+
+```bash
+git fetch origin
+git switch -c feature/nombre-tarea origin/main
+```
+
+Convención: `feature/`, `fix/`, `refactor/`, `docs/`, `chore/`. Las ramas
+representan **tareas**, no computadores.
+
+## Creación de un worktree (recomendado para agentes en paralelo)
+
+```bash
+# Linux/macOS
+./scripts/new-worktree.sh feature/dashboard
+# Windows
+.\scripts\new-worktree.ps1 feature/dashboard
+```
+
+Crea la rama desde `origin/main` y una carpeta hermana `agente-de-empleos-feature-dashboard/`.
+Cuando termines y merges el PR: `scripts/remove-worktree.sh feature/dashboard --delete-branch`.
+
+## Continuación desde otro PC
+
+```bash
+git fetch origin
+git switch nombre-rama
+git pull --ff-only
+```
+
+Y antes de dejar el PC, SIEMPRE: `git add . && git commit -m "wip: avance" && git push`.
+
+## Apertura de Pull Request
+
+```bash
+git push -u origin feature/nombre-tarea
+gh pr create --base main
+```
+
+El workflow `validate.yml` corre typecheck, tests, build, migraciones y escaneo
+de secretos automáticamente. `main` está protegida: no hay push directo ni force push.
+
+## Procedimiento de actualización desde `main`
+
+Cuando tu rama quedó atrás de `main`:
+
+```bash
+git fetch origin
+git switch feature/nombre-tarea
+git merge origin/main     # o: git pull --ff-only si tu rama no diverge
+```
+
+Resolver conflictos: ver [`docs/MULTI_PC_WORKFLOW.md`](docs/MULTI_PC_WORKFLOW.md#resolver-conflictos-sin-borrar-trabajo-ajeno).
