@@ -3,11 +3,24 @@ import fs from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import type { APIRoute } from 'astro';
 import { db } from '@employment-agent/database';
-import { candidateDocuments, candidateProfiles } from '@employment-agent/database/schema';
+import { candidateDocuments, candidateProfiles, candidateExperiences, candidateSkills } from '@employment-agent/database/schema';
 import { eq } from 'drizzle-orm';
 import { storagePath } from '../../../lib/storage';
 
 export const prerender = false;
+
+interface ConfirmExperience {
+  role: string;
+  company: string;
+  startDate?: string;
+  endDate?: string;
+  description?: string;
+}
+
+interface ConfirmSkill {
+  name: string;
+  years?: number;
+}
 
 interface ConfirmBody {
   storedFilename: string;
@@ -16,6 +29,8 @@ interface ConfirmBody {
   phone: string;
   location: string;
   summary: string;
+  experiences?: ConfirmExperience[];
+  skills?: ConfirmSkill[];
 }
 
 /**
@@ -104,6 +119,46 @@ export const POST: APIRoute = async ({ request }) => {
   if (body.summary) updateSet.summary = body.summary;
   if (Object.keys(updateSet).length > 0) {
     await db.update(candidateProfiles).set(updateSet).where(eq(candidateProfiles.id, profileId));
+  }
+
+  // Replace experiences: delete old, insert new if provided.
+  if (Array.isArray(body.experiences)) {
+    await db.delete(candidateExperiences).where(eq(candidateExperiences.profileId, profileId));
+    for (const exp of body.experiences) {
+      if (exp.role && exp.company) {
+        await db.insert(candidateExperiences).values({
+          profileId,
+          role: exp.role,
+          company: exp.company,
+          startDate: exp.startDate || null,
+          endDate: exp.endDate || null,
+          description: exp.description || null,
+          source: 'cv-corrected',
+        });
+      }
+    }
+  }
+
+  // Replace skills: delete old, insert new if provided.
+  if (Array.isArray(body.skills)) {
+    await db.delete(candidateSkills).where(eq(candidateSkills.profileId, profileId));
+    for (const skill of body.skills) {
+      if (skill.name && typeof skill.name === 'string' && skill.name.trim() !== '') {
+        const rawYears = skill.years;
+        let years: number | null = null;
+        if (typeof rawYears === 'number' && Number.isFinite(rawYears)) {
+          years = rawYears;
+        } else if (typeof rawYears === 'string' && rawYears.trim() !== '') {
+          const parsed = Number(rawYears.replace(/[^0-9.]/g, ''));
+          if (Number.isFinite(parsed)) years = parsed;
+        }
+        await db.insert(candidateSkills).values({
+          profileId,
+          name: skill.name.trim(),
+          years,
+        });
+      }
+    }
   }
 
   const insertedDoc = await db

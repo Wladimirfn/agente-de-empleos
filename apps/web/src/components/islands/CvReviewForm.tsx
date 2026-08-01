@@ -10,6 +10,11 @@ type UploadResponse =
         charCount: number;
         truncated: boolean;
         hints: { email: string | null; phone: string | null; name: string | null };
+        location: string | null;
+        summary: string | null;
+        experiences?: Array<{ role: string; company: string; startDate?: string | null; endDate?: string | null; description?: string | null }>;
+        skills?: Array<{ name: string; years?: number | string | null }>;
+        aiAnalyzed: boolean;
         fullText: string;
       };
     }
@@ -24,9 +29,11 @@ interface ConfirmPayload {
   phone: string;
   location: string;
   summary: string;
+  experiences: Array<{ role: string; company: string; startDate?: string | null; endDate?: string | null; description?: string | null }>;
+  skills: Array<{ name: string; years?: number | string | null }>;
 }
 
-const emptyConfirm: ConfirmPayload = { storedFilename: '', fullName: '', email: '', phone: '', location: '', summary: '' };
+const emptyConfirm: ConfirmPayload = { storedFilename: '', fullName: '', email: '', phone: '', location: '', summary: '', experiences: [], skills: [] };
 
 export default function CvReviewForm() {
   const [step, setStep] = useState<'upload' | 'review' | 'done'>('upload');
@@ -62,8 +69,10 @@ export default function CvReviewForm() {
         fullName: data.parsed.hints.name ?? '',
         email: data.parsed.hints.email ?? '',
         phone: data.parsed.hints.phone ?? '',
-        location: '',
-        summary: '',
+        location: data.parsed.location ?? '',
+        summary: data.parsed.summary ?? '',
+        experiences: data.parsed.experiences ?? [],
+        skills: data.parsed.skills ?? [],
       });
       setStep('review');
     } catch (err) {
@@ -135,6 +144,16 @@ export default function CvReviewForm() {
             Archivo: <code className="text-accent">{parsed.filename}</code> · {parsed.mime} · {parsed.charCount} caracteres
             {parsed.truncated && <span className="ml-2 text-yellow-400">(truncado)</span>}
           </p>
+          {'aiAnalyzed' in parsed && parsed.aiAnalyzed && (
+            <p className="mt-2 text-xs text-green-400">
+              Analizado con IA: los campos fueron extraídos inteligentemente del texto del CV.
+            </p>
+          )}
+          {'aiAnalyzed' in parsed && !parsed.aiAnalyzed && (
+            <p className="mt-2 text-xs text-yellow-400">
+              Sin IA activa: campos extraídos por regex. Configurá un proveedor para mejor extracción.
+            </p>
+          )}
           <details className="mt-2">
             <summary className="cursor-pointer text-sm text-muted hover:text-foreground">Ver texto extraído</summary>
             <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded border border-border/50 bg-background/60 p-3 text-xs">
@@ -199,6 +218,32 @@ export default function CvReviewForm() {
               className="mt-1 w-full rounded border border-border bg-background/60 px-3 py-2 text-sm focus:border-accent focus:outline-none"
             />
           </label>
+
+          {form.experiences.length > 0 && (
+            <div className="space-y-2">
+              <span className="text-sm text-foreground">Experiencia detectada ({form.experiences.length})</span>
+              {form.experiences.map((exp, i) => (
+                <div key={i} className="rounded border border-border/50 bg-background/60 p-3 text-sm">
+                  <span className="text-foreground font-medium">{exp.role}</span> — <span className="text-muted">{exp.company}</span>
+                  {exp.startDate && <span className="text-xs text-muted ml-2">{exp.startDate}{exp.endDate ? ` → ${exp.endDate}` : ' → actual'}</span>}
+                  {exp.description && <p className="mt-1 text-xs text-muted">{exp.description}</p>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {form.skills.length > 0 && (
+            <div className="space-y-2">
+              <span className="text-sm text-foreground">Skills detectados ({form.skills.length})</span>
+              <div className="flex flex-wrap gap-2">
+                {form.skills.map((skill, i) => (
+                  <span key={i} className="inline-flex items-center rounded border border-border px-2 py-1 text-xs">
+                    {skill.name}{skill.years ? ` (${skill.years}a)` : ''}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
 
           {error && (
             <div className="rounded border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">{error}</div>
