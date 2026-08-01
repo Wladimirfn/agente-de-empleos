@@ -2,12 +2,44 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Modern dark palette inspired by ChatGPT / Linear / Vercel.
+   Warm neutrals + a tasteful accent so the UI feels alive, not corporate. */
 :root {
-  --bg: 15 23 42;
-  --fg: 226 232 240;
-  --muted: 100 116 139;
-  --border: 51 65 85;
-  --accent: 56 189 248;
+  --bg: 9 9 11;
+  --bg-elevated: 24 24 27;
+  --bg-subtle: 39 39 42;
+  --fg: 244 244 245;
+  --fg-muted: 161 161 170;
+  --border: 39 39 42;
+  --border-strong: 63 63 70;
+  --accent: 16 185 129;
+  --accent-soft: 6 78 59;
+  --warn: 245 158 11;
+  --danger: 239 68 68;
+  /* Tell the browser the UI is dark so native controls (select dropdowns,
+     date pickers, scrollbars, autofill) render dark instead of light. */
+  color-scheme: dark;
+}
+
+/* Native select dropdowns: without this, Windows renders a white option list
+   while the text inherits the near-white --fg → white on white. */
+select,
+option {
+  background-color: rgb(var(--bg-elevated));
+  color: rgb(var(--fg));
+}
+
+/* Chrome autofill paints inputs with a light background; keep it dark and
+   the typed text readable. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+textarea:-webkit-autofill,
+select:-webkit-autofill {
+  -webkit-text-fill-color: rgb(var(--fg));
+  -webkit-box-shadow: 0 0 0 1000px rgb(var(--bg-elevated)) inset;
+  caret-color: rgb(var(--fg));
+  transition: background-color 9999s ease-out;
 }
 
 html,
@@ -17,5 +49,61 @@ body {
 
 body {
   @apply bg-background text-foreground;
-  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Soft scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--border-strong)) transparent;
+}
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: rgb(var(--border-strong)); border-radius: 6px; }
+
+/* Subtle elevation utilities */
+.elev-1 {
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+.elev-2 {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* Caret blink for streaming */
+@keyframes caret-blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+.streaming-caret {
+  animation: caret-blink 1.2s ease-in-out infinite;
+}
+
+/* Smooth fade for messages */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-up {
+  animation: fade-up 240ms ease-out;
+}
+
+/* Pulsing dot used while waiting for first chunk */
+@keyframes pulse-ring {
+  0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.45); }
+  70% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+.pulse-ring::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgb(var(--accent));
+  margin-right: 8px;
+  vertical-align: middle;
+  animation: pulse-ring 1.5s ease-out infinite;
 }

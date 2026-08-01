@@ -9,7 +9,7 @@ interface Props {
 const { title = 'Employment Agent', activeRoute = '/' } = Astro.props;
 
 const navItems = [
-  { href: '/', label: 'Inicio', match: (r: string) => r === '/' },
+  { href: '/', label: 'Chat', match: (r: string) => r === '/' },
   { href: '/perfil', label: 'Perfil', match: (r: string) => r.startsWith('/perfil') },
   { href: '/curriculums', label: 'Currículums', match: (r: string) => r.startsWith('/curriculums') },
   { href: '/ofertas', label: 'Ofertas', match: (r: string) => r.startsWith('/ofertas') },
@@ -28,28 +28,46 @@ const currentPath = Astro.url.pathname;
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>{title}</title>
   </head>
-  <body class="min-h-screen">
+  <body class="min-h-screen bg-background text-foreground">
     <div class="flex min-h-screen">
-      <aside class="w-56 border-r border-border bg-background/50 p-4">
-        <h1 class="text-lg font-semibold mb-6">employment-agent</h1>
-        <nav class="flex flex-col gap-1">
-          {navItems.map((item) => (
-            <a
-              href={item.href}
-              class={`block rounded px-3 py-2 text-sm transition-colors ${
-                item.match(activeRoute)
-                  ? 'bg-accent/10 text-accent'
-                  : 'text-muted hover:bg-muted/10 hover:text-foreground'
-              }`}
-            >
-              {item.label}
-            </a>
-          ))}
+      <aside class="hidden md:flex w-64 flex-col border-r border-border bg-background">
+        <div class="flex items-center gap-2 px-5 py-5">
+          <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-background elev-1">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4">
+              <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+              <circle cx="9" cy="7" r="4" />
+              <path d="m22 11-3-3m0 0-3 3m3-3v8" />
+            </svg>
+          </div>
+          <span class="text-sm font-semibold tracking-tight">employment<span class="text-accent">·</span>agent</span>
+        </div>
+        <nav class="flex-1 overflow-y-auto px-3 py-2">
+          <ul class="flex flex-col gap-0.5">
+            {navItems.map((item) => (
+              <li>
+                <a
+                  href={item.href}
+                  class={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors ${
+                    item.match(activeRoute)
+                      ? 'bg-accent/15 text-accent font-medium'
+                      : 'text-fg-muted hover:bg-elevated hover:text-foreground'
+                  }`}
+                >
+                  {item.label}
+                </a>
+              </li>
+            ))}
+          </ul>
         </nav>
+        <div class="border-t border-border px-5 py-4 text-xs text-fg-muted">
+          <p>Local · MiniMax M3</p>
+          <p class="mt-1 opacity-60">v0.1 · memoria activa</p>
+        </div>
       </aside>
-      <main class="flex-1 p-8 overflow-auto">
+      <main class="flex-1 overflow-hidden">
         <slot />
       </main>
     </div>

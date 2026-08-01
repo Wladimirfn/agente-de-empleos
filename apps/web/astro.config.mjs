@@ -2,6 +2,12 @@ import { defineConfig } from 'astro/config';
 import node from '@astrojs/node';
 import react from '@astrojs/react';
 import tailwind from '@astrojs/tailwind';
+import { config as loadDotenv } from 'dotenv';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+loadDotenv({ path: path.resolve(repoRoot, '.env'), quiet: true });
 
 export default defineConfig({
   output: 'server',
