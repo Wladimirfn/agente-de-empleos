@@ -12,6 +12,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@employment-agent/domain": "*"
+    "@anthropic-ai/sdk": "^0.115.0",
+    "@employment-agent/domain": "*",
+    "@google/genai": "^2.15.0",
+    "openai": "^7.2.0"
   }
 }

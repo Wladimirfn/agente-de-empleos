@@ -31,4 +31,8 @@ export class DeterministicStubProvider implements LLMProvider {
   async summarize(_text: string): Promise<string> {
     return 'stub';
   }
+
+  async chat(_message: string | unknown[]): Promise<string> {
+    return 'stub';
+  }
 }
