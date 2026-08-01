@@ -1,10 +1,7 @@
 ---
 import Base from '../../layouts/Base.astro';
+import ApplicationsList from '../../components/islands/ApplicationsList';
 ---
 <Base title="Postulaciones" activeRoute="/postulaciones">
-  <h2 class="text-2xl font-semibold mb-4">Postulaciones</h2>
-  <p class="text-muted">Acá vas a ver el estado de cada postulación: borrador, lista para enviar, enviada.</p>
-  <div class="mt-6 rounded border border-border p-6 text-center text-muted">
-    Sin postulaciones todavía.
-  </div>
+  <ApplicationsList client:load />
 </Base>
