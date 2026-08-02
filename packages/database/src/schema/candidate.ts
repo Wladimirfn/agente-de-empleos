@@ -11,6 +11,17 @@ export const candidateProfiles = sqliteTable('candidate_profiles', {
   summary: text('summary'),
   createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text('updated_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+  // Audit trail: which CV document last replaced this profile's data, and
+  // when. Lets us answer "when did this profile get overwritten" without
+  // digging through logs. Nullable because legacy rows (pre-audit) have
+  // no replacement event to point at.
+  //
+  // No FK reference declared here on purpose: candidateProfiles and
+  // candidateDocuments have a circular definition (profile -> documents via
+  // superseded_by_document_id; documents -> profile via profile_id). The
+  // actual FK constraint is added by the matching migration SQL.
+  supersededByDocumentId: integer('superseded_by_document_id'),
+  supersededAt: text('superseded_at'),
 }, (t) => ({
   // Defense-in-depth: fullName must be non-empty when present.
   // The application layer (client + confirm endpoint) is the primary gate,

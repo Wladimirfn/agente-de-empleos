@@ -126,4 +126,61 @@ describe('POST /api/cvs/confirm fullName validation', () => {
     const updateCalls = (db.update as unknown as ReturnType<typeof vi.fn>).mock.calls;
     expect(updateCalls.length).toBeGreaterThan(0);
   });
+
+  it('records superseded_by_document_id and superseded_at in the audit trail', async () => {
+    // Capture the update set so we can assert it contains the audit columns.
+    let capturedSet: Record<string, unknown> | null = null;
+    const { db } = await import('@employment-agent/database');
+    const setSpy = vi.fn((set: Record<string, unknown>) => {
+      capturedSet = set;
+      return { where: vi.fn(async () => undefined) };
+    });
+    (db.update as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(() => ({
+      set: setSpy,
+    }));
+
+    insertDocSpy.mockResolvedValue([{ id: 42 }]); // deterministic doc id
+    profilesSelect.mockResolvedValue([{ id: 7 }]);
+    const before = Date.now();
+    const response = await callPost({ ...validBody, fullName: 'Estefanía Montecinos' });
+    const after = Date.now();
+
+    expect(response.status).toBe(201);
+    expect(capturedSet).not.toBeNull();
+    expect(capturedSet!.superseded_by_document_id).toBe(42);
+    expect(typeof capturedSet!.superseded_at).toBe('string');
+    const ts = new Date(capturedSet!.superseded_at as string).getTime();
+    expect(ts).toBeGreaterThanOrEqual(before);
+    expect(ts).toBeLessThanOrEqual(after);
+    // The parsed fullName must also be in the same update set so we don't
+    // split the data overwrite from the audit record.
+    expect(capturedSet!.full_name).toBe('Estefanía Montecinos');
+  });
+
+  it('overwrites superseded_by_document_id when a newer CV is uploaded', async () => {
+    // Simulates the full-replacement scenario: a second CV is confirmed
+    // and the profile should now point at the newer document, not the old.
+    let capturedSets: Array<Record<string, unknown>> = [];
+    const { db } = await import('@employment-agent/database');
+    (db.update as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => ({
+      set: vi.fn((set: Record<string, unknown>) => {
+        capturedSets.push(set);
+        return { where: vi.fn(async () => undefined) };
+      }),
+    }));
+
+    insertDocSpy.mockResolvedValueOnce([{ id: 100 }]);
+    profilesSelect.mockResolvedValue([{ id: 1 }]);
+    const first = await callPost({ ...validBody, fullName: 'Eric Flores' });
+
+    insertDocSpy.mockResolvedValueOnce([{ id: 200 }]);
+    profilesSelect.mockResolvedValue([{ id: 1 }]);
+    const second = await callPost({ ...validBody, fullName: 'Estefanía Montecinos' });
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    expect(capturedSets.length).toBe(2);
+    expect(capturedSets[0]!.superseded_by_document_id).toBe(100);
+    expect(capturedSets[1]!.superseded_by_document_id).toBe(200);
+  });
 });
