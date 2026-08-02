@@ -57,7 +57,7 @@ export function buildQueries(profile: CandidateProfile): string[] {
   const summary = profile.summary ?? '';
   const rolesMatch = summary.match(/Roles objetivo activos:\s*(.+)/);
   const targetRoles = rolesMatch
-    ? rolesMatch[1].split(',').map((r) => r.replace(/\s*\(prioridad\s*\d+\)/, '').trim()).filter(Boolean)
+    ? (rolesMatch[1] ?? '').split(',').map((r) => r.replace(/\s*\(prioridad\s*\d+\)/, '').trim()).filter(Boolean)
     : [];
 
   // 2. Short skill names work as search queries; long descriptions don't.

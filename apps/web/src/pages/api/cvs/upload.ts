@@ -1,7 +1,7 @@
 import type { APIRoute } from 'astro';
-import { CvParseError, parseCv, type ParsedCv } from '../../../lib/cv-parser';
-import { MAX_CV_BYTES, saveCurriculum } from '../../../lib/storage';
-import { getActiveAgent } from '../../../lib/agent';
+import { CvParseError, parseCv, type ParsedCv } from '../../../lib/cv-parser.js';
+import { MAX_CV_BYTES, saveCurriculum } from '../../../lib/storage.js';
+import { getActiveAgent } from '../../../lib/agent.js';
 
 export const prerender = false;
 

@@ -68,7 +68,7 @@ export async function appendMessage(args: {
       model: args.model ?? null,
     })
     .returning();
-  const r = rows[0];
+  const r = rows[0]!;
   return { id: r.id, role: r.role, content: r.content, createdAt: r.createdAt };
 }
 
@@ -132,7 +132,7 @@ export async function addFact(args: {
       importance: args.importance ?? 5,
     })
     .returning();
-  const r = rows[0];
+  const r = rows[0]!;
   return {
     id: r.id,
     category: r.category,
@@ -240,7 +240,7 @@ export async function saveSummary(args: {
       model: args.model ?? null,
     })
     .returning();
-  const r = rows[0];
+  const r = rows[0]!;
   return {
     id: r.id,
     conversationId: r.conversationId,
@@ -286,7 +286,7 @@ export async function buildContextForLLM(
 
   // The most recent summary supersedes all older ones; keep only the latest.
   // Older summaries are kept in DB for audit but not loaded into context.
-  const latest = summaries[summaries.length - 1];
+  const latest = summaries[summaries.length - 1]!;
   const summaryTurn: LLMChatMessage = {
     role: 'system',
     content: `Resumen de la conversación previa con el candidato (${latest.turnsCovered} turnos compactados, ${latest.tokensBefore} tokens):\n\n${latest.summary}`,
@@ -321,8 +321,8 @@ export async function applyCompaction(args: {
   const profileId = await resolveProfileId();
   if (profileId === 0) return null;
 
-  const startId = args.messagesToCompact[0].id;
-  const endId = args.messagesToCompact[args.messagesToCompact.length - 1].id;
+  const startId = args.messagesToCompact[0]!.id;
+  const endId = args.messagesToCompact[args.messagesToCompact.length - 1]!.id;
   if (typeof startId !== 'number' || typeof endId !== 'number' || startId < 0 || endId < 0) return null;
 
   // Order matters: insert summary first, then delete the covered rows. If

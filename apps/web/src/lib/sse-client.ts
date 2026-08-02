@@ -1,4 +1,4 @@
-import { prependEvent, type ActivityEvent } from '../stores/activity';
+import { prependEvent, type ActivityEvent } from '../stores/activity.js';
 
 export function connectToEventStream(): () => void {
   if (typeof EventSource === 'undefined') {

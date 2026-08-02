@@ -3,7 +3,7 @@ export type AppErrorKind = 'validation' | 'not_found' | 'human_intervention' | '
 export class AppError extends Error {
   readonly kind: AppErrorKind;
   readonly code: string;
-  readonly cause?: unknown;
+  override readonly cause?: unknown;
 
   constructor(message: string, options: { kind: AppErrorKind; code: string; cause?: unknown }) {
     super(message);

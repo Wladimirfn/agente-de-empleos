@@ -32,7 +32,7 @@ export interface ParsedCv {
 const MAX_CHARS = 50_000;
 
 export class CvParseError extends Error {
-  constructor(message: string, public readonly cause?: unknown) {
+  constructor(message: string, public override readonly cause?: unknown) {
     super(message);
     this.name = 'CvParseError';
   }

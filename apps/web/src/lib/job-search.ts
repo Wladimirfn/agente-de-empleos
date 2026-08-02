@@ -54,7 +54,7 @@ async function ensurePlatform(slug: string, displayName: string, baseUrl?: strin
     .insert(platforms)
     .values({ slug, displayName, baseUrl, status: 'active' })
     .returning({ id: platforms.id });
-  return inserted[0].id;
+  return inserted[0]!.id;
 }
 
 /**
@@ -91,13 +91,13 @@ async function upsertJob(args: {
       rawPayload: args.result.rawPayload ? JSON.stringify(args.result.rawPayload) : null,
     })
     .returning({ id: jobs.id });
-  return inserted[0].id;
+  return inserted[0]!.id;
 }
 
 async function loadProfile(): Promise<(CandidateProfile & { searchScope?: string }) | null> {
   const rows = await db.select().from(candidateProfiles).limit(1);
   if (rows.length === 0) return null;
-  const p = rows[0];
+  const p = rows[0]!;
   const experiences = await db
     .select()
     .from(candidateExperiences)
@@ -366,7 +366,7 @@ export async function applyToJob(args: {
       preparedAt: new Date().toISOString(),
     })
     .returning({ id: applications.id });
-  return { applicationId: inserted[0].id };
+  return { applicationId: inserted[0]!.id };
 }
 
 /**

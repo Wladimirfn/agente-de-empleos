@@ -348,7 +348,8 @@ export default function AgentChat() {
 
   const latestUsage = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].usage) return messages[i].usage;
+      const usage = messages[i]!.usage;
+      if (usage) return usage;
     }
     return latestUsageRef.current;
   }, [messages, latestUsageRef.current]);
@@ -405,14 +406,14 @@ export default function AgentChat() {
               setMessages((prev) => {
                 const next = [...prev];
                 const idx = next.findIndex((m) => m.streaming);
-                if (idx >= 0) next[idx] = { ...next[idx], text: assistantText, tool: null };
+                if (idx >= 0) next[idx] = { ...next[idx]!, text: assistantText, tool: null };
                 return next;
               });
             } else if (event === 'status' && typeof parsed.tool === 'string') {
               setMessages((prev) => {
                 const next = [...prev];
                 const idx = next.findIndex((m) => m.streaming);
-                if (idx >= 0) next[idx] = { ...next[idx], tool: parsed.tool };
+                if (idx >= 0) next[idx] = { ...next[idx]!, tool: parsed.tool };
                 return next;
               });
             } else if (event === 'done' && typeof parsed.reply === 'string') {

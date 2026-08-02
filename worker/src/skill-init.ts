@@ -14,7 +14,7 @@ async function ensurePlatform(slug: string, displayName: string): Promise<number
     .insert(platforms)
     .values({ slug, displayName, status: 'active' })
     .returning({ id: platforms.id });
-  return inserted[0].id;
+  return inserted[0]!.id;
 }
 
 /**

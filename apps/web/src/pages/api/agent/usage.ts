@@ -192,7 +192,7 @@ async function buildProfileContext(): Promise<string> {
   try {
     const profiles = await db.select().from(candidateProfiles).limit(1);
     if (profiles.length > 0) {
-      const p = profiles[0];
+      const p = profiles[0]!;
       const exps = await db.select().from(candidateExperiences).where(eq(candidateExperiences.profileId, p.id));
       const skills = await db.select().from(candidateSkills).where(eq(candidateSkills.profileId, p.id));
       profileContext = `\n\nDatos del candidato:\n- Nombre: ${p.fullName ?? 'no disponible'}\n- Email: ${p.email ?? 'no disponible'}\n- Teléfono: ${p.phone ?? 'no disponible'}\n- Ubicación: ${p.location ?? 'no disponible'}\n- Resumen: ${p.summary ?? 'no disponible'}\n- Experiencias: ${exps.length > 0 ? exps.map(e => `${e.role} en ${e.company} (${e.startDate ?? ''}-${e.endDate ?? 'actual'})`).join('; ') : 'sin experiencias cargadas'}\n- Skills: ${skills.length > 0 ? skills.map(s => `${s.name}${s.years ? ` (${s.years} años)` : ''}`).join(', ') : 'sin skills cargados'}\n\nUsá estos datos para dar consejos personalizados. Si te preguntan por cargos posibles, recomendá basándote EXCLUSIVAMENTE en la experiencia y skills del candidato. Sé honesto: si no califica para algo, decílo.`;

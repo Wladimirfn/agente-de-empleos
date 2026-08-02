@@ -40,7 +40,7 @@ export default function CvReviewForm() {
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [confirming, setConfirming] = useState(false);
-  const [parsed, setParsed] = useState<UploadResponse extends { ok: true } ? UploadResponse['parsed'] : null>(null);
+  const [parsed, setParsed] = useState<Extract<UploadResponse, { ok: true }>['parsed'] | null>(null);
   const [form, setForm] = useState<ConfirmPayload>(emptyConfirm);
   const [savedProfileId, setSavedProfileId] = useState<number | null>(null);
 

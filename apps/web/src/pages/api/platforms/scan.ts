@@ -58,7 +58,7 @@ export const POST: APIRoute = async ({ request }) => {
       type: 'BROWSER_AGENT_SCAN',
       payloadJson: JSON.stringify({
         skillSlug: slug,
-        platformUrl: platform[0].baseUrl ?? `https://www.${slug}.cl`,
+        platformUrl: platform[0]!.baseUrl ?? `https://www.${slug}.cl`,
         triggeredBy: 'web-ui-agent',
       }),
       status: 'pending',

@@ -15,7 +15,7 @@ export const GET: APIRoute = async () => {
   if (profiles.length === 0) {
     return json({ status: 'empty', profile: null, experiences: [], skills: [] });
   }
-  const profile = profiles[0];
+  const profile = profiles[0]!;
   const experiences = await db.select().from(candidateExperiences).where(eq(candidateExperiences.profileId, profile.id));
   const skills = await db.select().from(candidateSkills).where(eq(candidateSkills.profileId, profile.id));
   return json({ status: 'ok', profile, experiences, skills });
@@ -44,9 +44,9 @@ export const PUT: APIRoute = async ({ request }) => {
 
   if (Object.keys(updateSet).length > 0) {
     updateSet.updated_at = new Date().toISOString();
-    await db.update(candidateProfiles).set(updateSet).where(eq(candidateProfiles.id, profiles[0].id));
+    await db.update(candidateProfiles).set(updateSet).where(eq(candidateProfiles.id, profiles[0]!.id));
   }
 
-  const updated = await db.select().from(candidateProfiles).where(eq(candidateProfiles.id, profiles[0].id));
+  const updated = await db.select().from(candidateProfiles).where(eq(candidateProfiles.id, profiles[0]!.id));
   return json({ status: 'ok', profile: updated[0] });
 };

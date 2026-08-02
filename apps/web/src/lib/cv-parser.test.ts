@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { Document, Packer, Paragraph } from 'docx';
-import { parseCv, CvParseError } from './cv-parser';
+import { parseCv, CvParseError } from './cv-parser.js';
 
 async function makePdf(lines: string[]): Promise<Buffer> {
   const doc = await PDFDocument.create();

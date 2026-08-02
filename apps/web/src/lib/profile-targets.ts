@@ -86,7 +86,7 @@ export async function addTargetRole(args: {
       isActive: args.isActive === false ? 0 : 1,
     })
     .returning();
-  const r = rows[0];
+  const r = rows[0]!;
   return {
     id: r.id,
     roleTitle: r.roleTitle,
@@ -122,7 +122,7 @@ export async function updateTargetRole(args: {
     .set(updates)
     .where(eq(candidateTargetRoles.id, args.id));
   const updated = await db.select().from(candidateTargetRoles).where(eq(candidateTargetRoles.id, args.id)).limit(1);
-  const r = updated[0];
+  const r = updated[0]!;
   return {
     id: r.id,
     roleTitle: r.roleTitle,
@@ -188,7 +188,7 @@ export async function createProposal(args: {
       payloadJson: JSON.stringify(args.payload),
     })
     .returning();
-  const r = rows[0];
+  const r = rows[0]!;
   return {
     id: r.id,
     kind: r.kind,
@@ -212,7 +212,7 @@ export async function resolveProposal(args: {
     .where(and(eq(profileProposals.id, args.id), eq(profileProposals.profileId, profileId)))
     .limit(1);
   if (existing.length === 0) return null;
-  if (existing[0].status !== 'pending') return null; // already resolved
+  if (existing[0]!.status !== 'pending') return null; // already resolved
 
   await db
     .update(profileProposals)
@@ -220,7 +220,7 @@ export async function resolveProposal(args: {
     .where(eq(profileProposals.id, args.id));
 
   const updated = await db.select().from(profileProposals).where(eq(profileProposals.id, args.id)).limit(1);
-  const r = updated[0];
+  const r = updated[0]!;
   return {
     id: r.id,
     kind: r.kind,

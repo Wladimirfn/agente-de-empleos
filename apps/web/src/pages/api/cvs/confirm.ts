@@ -5,7 +5,7 @@ import type { APIRoute } from 'astro';
 import { db } from '@employment-agent/database';
 import { candidateDocuments, candidateProfiles, candidateExperiences, candidateSkills } from '@employment-agent/database/schema';
 import { eq } from 'drizzle-orm';
-import { storagePath } from '../../../lib/storage';
+import { storagePath } from '../../../lib/storage.js';
 
 export const prerender = false;
 
@@ -19,7 +19,7 @@ interface ConfirmExperience {
 
 interface ConfirmSkill {
   name: string;
-  years?: number;
+  years?: number | string;
 }
 
 interface ConfirmBody {
@@ -85,7 +85,7 @@ export const POST: APIRoute = async ({ request }) => {
   let profileId: number;
   if (existing.length > 0) {
     return new Response(
-      JSON.stringify({ ok: true, documentId: existing[0].id, profileId: existing[0].profileId, deduped: true }),
+      JSON.stringify({ ok: true, documentId: existing[0]!.id, profileId: existing[0]!.profileId, deduped: true }),
       { status: 200, headers: { 'Content-Type': 'application/json' } },
     );
   }
@@ -93,7 +93,7 @@ export const POST: APIRoute = async ({ request }) => {
   // Get-or-create primer perfil (single-profile MVP).
   const profiles = await db.select({ id: candidateProfiles.id }).from(candidateProfiles).limit(1);
   if (profiles.length > 0) {
-    profileId = profiles[0].id;
+    profileId = profiles[0]!.id;
   } else {
     const inserted = await db
       .insert(candidateProfiles)

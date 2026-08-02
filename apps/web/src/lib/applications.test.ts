@@ -8,8 +8,6 @@ const tempRoot = mkdtempSync(join(tmpdir(), `ea-apps-${randomUUID()}-`));
 process.env.DATABASE_PATH = join(tempRoot, 'apps.db');
 process.env.STORAGE_PATH = join(tempRoot, 'storage');
 
-describe.sequential ??= () => {};
-
 const { db, runMigrations, closeDb } = await import('@employment-agent/database');
 const { applications, applicationEvents, candidateProfiles, jobs, platforms } = await import('@employment-agent/database/schema');
 const { listApplications, updateApplicationStatus } = await import('./applications.js');
@@ -29,14 +27,14 @@ beforeEach(async () => {
     email: 'e@x.com',
     location: 'Puerto Montt',
   }).returning({ id: candidateProfiles.id });
-  profileId = insertedProfile[0].id;
+  profileId = insertedProfile[0]!.id;
   const insertedPlatform = await db.insert(platforms).values({
     slug: 'getonboard',
     displayName: 'GetOnboard',
     baseUrl: 'https://www.getonbrd.com',
     status: 'active',
   }).returning({ id: platforms.id });
-  platformId = insertedPlatform[0].id;
+  platformId = insertedPlatform[0]!.id;
 });
 
 afterAll(async () => {
@@ -52,7 +50,7 @@ async function insertJob(title: string, externalId: string): Promise<number> {
     location: 'Puerto Montt',
     url: 'https://example.com/job/' + externalId,
   }).returning({ id: jobs.id });
-  return inserted[0].id;
+  return inserted[0]!.id;
 }
 
 describe('applications', () => {
@@ -78,11 +76,11 @@ describe('applications', () => {
 
     const result = await listApplications();
     expect(result.length).toBe(1);
-    expect(result[0].job.title).toBe('Jefe de Mantención');
-    expect(result[0].job.platformSlug).toBe('getonboard');
-    expect(result[0].status).toBe('submitted');
-    expect(result[0].events.length).toBe(1);
-    expect(result[0].events[0].message).toContain('submitted');
+    expect(result[0]!.job.title).toBe('Jefe de Mantención');
+    expect(result[0]!.job.platformSlug).toBe('getonboard');
+    expect(result[0]!.status).toBe('submitted');
+    expect(result[0]!.events.length).toBe(1);
+    expect(result[0]!.events[0]!.message).toContain('submitted');
   });
 
   it('orders newest first', async () => {
@@ -91,8 +89,8 @@ describe('applications', () => {
     await db.insert(applications).values({ jobId, profileId, status: 'ready', createdAt: '2026-07-31T10:00:00Z' });
 
     const result = await listApplications();
-    expect(result[0].status).toBe('ready');
-    expect(result[1].status).toBe('draft');
+    expect(result[0]!.status).toBe('ready');
+    expect(result[1]!.status).toBe('draft');
   });
 
   it('updateApplicationStatus transitions and logs the change', async () => {
@@ -102,15 +100,15 @@ describe('applications', () => {
       profileId,
       status: 'draft',
     }).returning({ id: applications.id });
-    const appId = inserted[0].id;
+    const appId = inserted[0]!.id;
 
     const updated = await updateApplicationStatus({ applicationId: appId, status: 'ready' });
     expect(updated?.status).toBe('ready');
 
     const events = await db.select().from(applicationEvents);
     expect(events.length).toBe(1);
-    expect(events[0].kind).toBe('status_change');
-    expect(events[0].message).toContain('ready');
+    expect(events[0]!.kind).toBe('status_change');
+    expect(events[0]!.message).toContain('ready');
   });
 
   it('updateApplicationStatus returns null for unknown id', async () => {
@@ -125,7 +123,7 @@ describe('applications', () => {
       profileId,
       status: 'ready',
     }).returning({ id: applications.id });
-    const appId = inserted[0].id;
+    const appId = inserted[0]!.id;
 
     const updated = await updateApplicationStatus({ applicationId: appId, status: 'submitted' });
     expect(updated?.status).toBe('submitted');

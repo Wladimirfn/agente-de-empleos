@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -41,7 +41,8 @@ describe('database client', () => {
 
   it('creates a sqlite file in the configured location', async () => {
     process.env.DATABASE_PATH = path.join(tmpDir, 'second.db');
-    const mod = await import('../src/client.js?second=1');
+    vi.resetModules();
+    const mod = await import('../src/client.js');
     expect(mod.db).toBeDefined();
     mod.closeDb();
   });

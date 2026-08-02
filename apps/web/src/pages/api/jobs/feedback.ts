@@ -16,7 +16,7 @@ export const GET: APIRoute = async ({ url }) => {
   const slug = url.searchParams.get('platform');
   const profileRows = await db.select().from(candidateProfiles).limit(1);
   if (profileRows.length === 0) return json({ jobs: [] });
-  const profileId = profileRows[0].id;
+  const profileId = profileRows[0]!.id;
 
   // Build query: jobs + optional match + optional feedback
   let query = db
@@ -101,7 +101,7 @@ export const POST: APIRoute = async ({ request }) => {
 
   const profileRows = await db.select().from(candidateProfiles).limit(1);
   if (profileRows.length === 0) return json({ error: 'No profile' }, 404);
-  const profileId = profileRows[0].id;
+  const profileId = profileRows[0]!.id;
 
   // Get the original score
   const matchRows = await db

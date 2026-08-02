@@ -16,7 +16,7 @@ const VALID_SCOPES = new Set(['local', 'national', 'international', 'remote']);
 export const GET: APIRoute = async () => {
   const rows = await db.select().from(candidateProfiles).limit(1);
   if (rows.length === 0) return json({ searchScopes: ['local'], location: null });
-  const p = rows[0];
+  const p = rows[0]!;
   const raw = p.searchScope ?? 'local';
   const scopes = raw.split(',').map((s) => s.trim()).filter((s) => VALID_SCOPES.has(s));
   return json({ searchScopes: scopes.length > 0 ? scopes : ['local'], location: p.location ?? null });
@@ -41,10 +41,10 @@ export const PUT: APIRoute = async ({ request }) => {
   }
   const rows = await db.select().from(candidateProfiles).limit(1);
   if (rows.length === 0) return json({ error: 'No profile found' }, 404);
-  const value = scopes.join(',');
+  const value = scopes.join(',') as 'local' | 'national' | 'international' | 'remote';
   await db
     .update(candidateProfiles)
     .set({ searchScope: value, updatedAt: new Date().toISOString() })
-    .where(eq(candidateProfiles.id, rows[0].id));
+    .where(eq(candidateProfiles.id, rows[0]!.id));
   return json({ searchScopes: scopes });
 };

@@ -8,8 +8,6 @@ const tempRoot = mkdtempSync(join(tmpdir(), `ea-jobs-${randomUUID()}-`));
 process.env.DATABASE_PATH = join(tempRoot, 'jobs.db');
 process.env.STORAGE_PATH = join(tempRoot, 'storage');
 
-describe.sequential ??= () => {};
-
 const { db, runMigrations, closeDb } = await import('@employment-agent/database');
 const { candidateProfiles, candidateExperiences, candidateSkills, jobs, jobMatches, applications, platforms } = await import('@employment-agent/database/schema');
 const { applyToJob, listMatches, searchJobs } = await import('./job-search.js');
@@ -31,7 +29,7 @@ beforeEach(async () => {
     location: 'Puerto Montt',
     summary: 'Técnico en refrigeración industrial con 11 años de experiencia.',
   }).returning({ id: candidateProfiles.id });
-  profileId = inserted[0].id;
+  profileId = inserted[0]!.id;
   await db.insert(candidateExperiences).values({
     profileId,
     company: 'Integra Chile',
@@ -86,12 +84,12 @@ describe('job-search orchestrator', () => {
     const results = await searchJobs({ query: 'mantención', limit: 10, sources: [mockSource] }, stubProvider as never);
     expect(results.length).toBe(3);
     // Refrigeración scores highest, then jefe de mantención, then marketing.
-    expect(results[0].title).toContain('refrigeración');
-    expect(results[0].score).toBe(95);
-    expect(results[1].title).toContain('mantención');
-    expect(results[1].score).toBe(80);
-    expect(results[2].title).toContain('Marketing');
-    expect(results[2].score).toBe(30);
+    expect(results[0]!.title).toContain('refrigeración');
+    expect(results[0]!.score).toBe(95);
+    expect(results[1]!.title).toContain('mantención');
+    expect(results[1]!.score).toBe(80);
+    expect(results[2]!.title).toContain('Marketing');
+    expect(results[2]!.score).toBe(30);
     expect(stubProvider.scoreMatch).toHaveBeenCalledTimes(3);
   });
 
@@ -110,7 +108,7 @@ describe('job-search orchestrator', () => {
     expect(second.length).toBe(1);
     // Second call should hit the cache, not the LLM.
     expect(stubProvider.scoreMatch).toHaveBeenCalledTimes(1);
-    expect(second[0].id).toBe(first[0].id);
+    expect(second[0]!.id).toBe(first[0]!.id);
   });
 
   it('dedupes the same external id from the same platform', async () => {
@@ -135,14 +133,14 @@ describe('job-search orchestrator', () => {
       },
     };
     const results = await searchJobs({ query: 'jefe', sources: [mockSource] }, stubProvider as never);
-    const jobId = results[0].id;
+    const jobId = results[0]!.id;
 
     const first = await applyToJob({ jobId, llm: stubProvider as never });
     const second = await applyToJob({ jobId, llm: stubProvider as never });
     expect(second.applicationId).toBe(first.applicationId);
 
     const matches = await listMatches();
-    expect(matches[0].applied).toBe(true);
+    expect(matches[0]!.applied).toBe(true);
   });
 
   it('applyToJob throws when the job does not exist', async () => {

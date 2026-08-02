@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sanitizeFilename, MAX_CV_BYTES } from './storage';
+import { sanitizeFilename, MAX_CV_BYTES } from './storage.js';
 
 describe('sanitizeFilename', () => {
   it('strips directory traversal', () => {

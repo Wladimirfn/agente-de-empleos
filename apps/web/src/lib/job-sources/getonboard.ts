@@ -30,7 +30,7 @@ export class GetOnboardSource implements JobSource {
     const json = (await response.json()) as { data?: Array<{ id?: string; attributes?: Record<string, unknown> }> };
     const rows = Array.isArray(json.data) ? json.data : [];
     return rows
-      .map((row) => {
+      .map((row): JobSourceResult | null => {
         const attr = row.attributes ?? {};
         const title = typeof attr.title === 'string' ? attr.title : null;
         if (!title) return null;

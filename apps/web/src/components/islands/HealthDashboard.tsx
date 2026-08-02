@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import type { HealthResponse, SkillHealthSummary, SkillStatus } from '../../lib/health-types';
-import { formatRelative } from '../../lib/format';
+import type { HealthResponse, SkillHealthSummary, SkillStatus } from '../../lib/health-types.js';
+import { formatRelative } from '../../lib/format.js';
 
 const POLL_MS = 5000;
 

@@ -294,7 +294,7 @@ export function deriveSlug(url: string): string | null {
   const labels = host.replace(/^www\./, '').split('.');
   // Country subdomains (cl.indeed.com, ar.linkedin.com) — the brand is the
   // second label, not the 2-letter country code.
-  const candidate = labels.length >= 3 && labels[0].length <= 2 ? labels[1] : labels[0];
+  const candidate = labels.length >= 3 && labels[0]!.length <= 2 ? labels[1]! : labels[0]!;
   const slug = (candidate ?? '').replace(/[^a-z0-9-]/g, '');
   return slug.length >= 2 ? slug : null;
 }
@@ -366,7 +366,7 @@ async function toolTriggerScan(args: Record<string, unknown>): Promise<string> {
     if (found.length === 0) {
       return `Error: la plataforma "${slug}" no existe. Pedí list_platforms para ver las disponibles o add_platform para agregarla.`;
     }
-    const platform = found[0];
+    const platform = found[0]!;
 
     // API-based sources (GetOnboard, Arbeitnow) are scanned inline from the
     // web server — the worker has no skill for them.

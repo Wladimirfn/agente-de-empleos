@@ -8,8 +8,6 @@ const tempRoot = mkdtempSync(join(tmpdir(), `ea-targets-${randomUUID()}-`));
 process.env.DATABASE_PATH = join(tempRoot, 'targets.db');
 process.env.STORAGE_PATH = join(tempRoot, 'storage');
 
-describe.sequential ??= () => {};
-
 const { db, runMigrations, closeDb } = await import('@employment-agent/database');
 const { candidateProfiles, candidateTargetRoles, profileProposals } = await import('@employment-agent/database/schema');
 const {
@@ -37,7 +35,7 @@ beforeEach(async () => {
     location: 'Puerto Montt',
     summary: 'Técnico en refrigeración',
   }).returning({ id: candidateProfiles.id });
-  profileId = inserted[0].id;
+  profileId = inserted[0]!.id;
 });
 
 afterAll(async () => {
@@ -53,13 +51,13 @@ describe('profile-targets', () => {
 
       const all = await listTargetRoles();
       expect(all.length).toBe(3);
-      expect(all[0].roleTitle).toBe('Jefe de Mantención');
-      expect(all[0].isActive).toBe(true);
-      expect(all[2].isActive).toBe(false);
+      expect(all[0]!.roleTitle).toBe('Jefe de Mantención');
+      expect(all[0]!.isActive).toBe(true);
+      expect(all[2]!.isActive).toBe(false);
 
       const active = await getActiveTargetRoles();
       expect(active.length).toBe(2);
-      expect(active[0].roleTitle).toBe('Jefe de Mantención');
+      expect(active[0]!.roleTitle).toBe('Jefe de Mantención');
 
       await updateTargetRole({ id: r2.id, priority: 1 });
       const updated = await listTargetRoles();
@@ -130,7 +128,7 @@ describe('profile-targets', () => {
       });
       await applyProposal(p.id);
       const updated = await db.select().from(candidateProfiles).limit(1);
-      expect(updated[0].summary).toBe('Nuevo resumen profesional.');
+      expect(updated[0]!.summary).toBe('Nuevo resumen profesional.');
     });
 
     it('applies add_target_role and creates the role', async () => {
@@ -142,7 +140,7 @@ describe('profile-targets', () => {
       await applyProposal(p.id);
       const roles = await listTargetRoles();
       expect(roles.length).toBe(1);
-      expect(roles[0].roleTitle).toBe('Jefe de Mantención');
+      expect(roles[0]!.roleTitle).toBe('Jefe de Mantención');
     });
 
     it('returns null when proposal does not exist', async () => {

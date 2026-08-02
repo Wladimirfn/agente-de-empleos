@@ -12,8 +12,6 @@ const tempRoot = mkdtempSync(join(tmpdir(), `ea-mem-${randomUUID()}-`));
 process.env.DATABASE_PATH = join(tempRoot, 'memory.db');
 process.env.STORAGE_PATH = join(tempRoot, 'storage');
 
-describe.sequential ??= () => {};
-
 // Dynamic imports so the env vars above are picked up by the database module.
 const { db, runMigrations, closeDb } = await import('@employment-agent/database');
 const { candidateProfiles, chatMemoryFacts } = await import('@employment-agent/database/schema');
@@ -71,8 +69,8 @@ describe.sequential('agent-memory', () => {
       await appendMessage({ role: 'user', content: 'primero' });
       await appendMessage({ role: 'assistant', content: 'segundo' });
       const history = await getRecentMessages();
-      expect(history[0].content).toBe('primero');
-      expect(history[1].content).toBe('segundo');
+      expect(history[0]!.content).toBe('primero');
+      expect(history[1]!.content).toBe('segundo');
     });
 
     it('converts to LLM message shape with valid roles only', async () => {
@@ -98,13 +96,13 @@ describe.sequential('agent-memory', () => {
         'Quiere quedarse en refrigeración industrial',
         'Vive en Punta Arenas',
       ]);
-      expect(all[0].importance).toBeGreaterThanOrEqual(all[1].importance);
+      expect(all[0]!.importance).toBeGreaterThanOrEqual(all[1]!.importance);
 
       const removed = await deleteFact(f1.id);
       expect(removed).toBe(true);
       const after = await listFacts();
       expect(after.length).toBe(1);
-      expect(after[0].id).toBe(f2.id);
+      expect(after[0]!.id).toBe(f2.id);
     });
 
     it('clearAllFacts removes every fact for the active profile', async () => {
@@ -138,8 +136,8 @@ describe.sequential('agent-memory', () => {
       await appendMessage({ role: 'user', content: 'turno 2 usuario' });
       await appendMessage({ role: 'assistant', content: 'turno 2 asesor' });
       const before = await getRecentMessages();
-      const startId = before[0].id;
-      const endId = before[1].id;
+      const startId = before[0]!.id;
+      const endId = before[1]!.id;
 
       await applyCompaction({
         messagesToCompact: before.slice(0, 2),
@@ -153,9 +151,9 @@ describe.sequential('agent-memory', () => {
       expect(after.map((m) => m.content)).toEqual(['turno 2 usuario', 'turno 2 asesor']);
       const summaries = await listSummaries();
       expect(summaries.length).toBe(1);
-      expect(summaries[0].startMessageId).toBe(startId);
-      expect(summaries[0].endMessageId).toBe(endId);
-      expect(summaries[0].tokensBefore).toBe(100);
+      expect(summaries[0]!.startMessageId).toBe(startId);
+      expect(summaries[0]!.endMessageId).toBe(endId);
+      expect(summaries[0]!.tokensBefore).toBe(100);
     });
 
     it('builds context that prepends the latest summary before recent turns', async () => {
@@ -173,11 +171,11 @@ describe.sequential('agent-memory', () => {
 
       const ctx = await buildContextForLLM();
       expect(ctx.summaries.length).toBe(1);
-      expect(ctx.messages[0].role).toBe('system');
-      expect(ctx.messages[0].content).toContain('Resumen de la conversación previa');
-      expect(ctx.messages[0].content).toContain('El candidato se presentó');
-      expect(ctx.messages[ctx.messages.length - 2].content).toBe('hola nuevo');
-      expect(ctx.messages[ctx.messages.length - 1].content).toBe('hola nuevo respuesta');
+      expect(ctx.messages[0]!.role).toBe('system');
+      expect(ctx.messages[0]!.content).toContain('Resumen de la conversación previa');
+      expect(ctx.messages[0]!.content).toContain('El candidato se presentó');
+      expect(ctx.messages[ctx.messages.length - 2]!.content).toBe('hola nuevo');
+      expect(ctx.messages[ctx.messages.length - 1]!.content).toBe('hola nuevo respuesta');
     });
 
     it('keeps only the latest summary in active context when multiple exist', async () => {
@@ -205,7 +203,7 @@ describe.sequential('agent-memory', () => {
       expect(all.length).toBe(2);
       const ctx = await buildContextForLLM();
       expect(ctx.summaries.length).toBe(1);
-      expect(ctx.summaries[0].summary).toBe('resumen dos');
+      expect(ctx.summaries[0]!.summary).toBe('resumen dos');
     });
 
     it('returns just the recent messages when no summaries exist', async () => {

@@ -35,7 +35,7 @@ export interface ApplicationWithJob {
 export async function listApplications(): Promise<ApplicationWithJob[]> {
   const profile = await db.select().from(candidateProfiles).limit(1);
   if (profile.length === 0) return [];
-  const profileId = profile[0].id;
+  const profileId = profile[0]!.id;
 
   const rows = await db
     .select({
@@ -112,7 +112,7 @@ export async function updateApplicationStatus(args: {
   const existing = await db
     .select()
     .from(applications)
-    .where(and(eq(applications.id, args.applicationId), eq(applications.profileId, profile[0].id)))
+    .where(and(eq(applications.id, args.applicationId), eq(applications.profileId, profile[0]!.id)))
     .limit(1);
   if (existing.length === 0) return null;
 
@@ -129,7 +129,7 @@ export async function updateApplicationStatus(args: {
     applicationId: args.applicationId,
     kind: 'status_change',
     message: `Estado cambiado a ${args.status}`,
-    payloadJson: JSON.stringify({ from: existing[0].status, to: args.status }),
+    payloadJson: JSON.stringify({ from: existing[0]!.status, to: args.status }),
   });
 
   const updated = await db.select().from(applications).where(eq(applications.id, args.applicationId)).limit(1);

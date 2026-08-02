@@ -26,7 +26,7 @@ import { resolveProposal } from './profile-targets.js';
 export async function applyProposal(proposalId: number): Promise<ProfileProposal | null> {
   const profiles = await db.select().from(candidateProfiles).limit(1);
   if (profiles.length === 0) throw new Error('No hay perfil cargado todavía.');
-  const profileId = profiles[0].id;
+  const profileId = profiles[0]!.id;
 
   const rows = await db
     .select()
@@ -34,7 +34,7 @@ export async function applyProposal(proposalId: number): Promise<ProfileProposal
     .where(and(eq(profileProposals.id, proposalId), eq(profileProposals.profileId, profileId)))
     .limit(1);
   if (rows.length === 0) return null;
-  const proposal = rows[0];
+  const proposal = rows[0]!;
   if (proposal.status !== 'pending') return null;
 
   const payload = JSON.parse(proposal.payloadJson) as Record<string, unknown>;

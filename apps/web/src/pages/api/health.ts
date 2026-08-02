@@ -2,7 +2,7 @@ import type { APIRoute } from 'astro';
 import { db } from '@employment-agent/database';
 import { platformSkills, platforms, skillHealthchecks, skillFailures } from '@employment-agent/database/schema';
 import { desc, eq, sql } from 'drizzle-orm';
-import type { HealthResponse, SkillHealthSummary, SkillStatus } from '../../lib/health-types';
+import type { HealthResponse, SkillHealthSummary, SkillStatus } from '../../lib/health-types.js';
 
 export const prerender = false;
 

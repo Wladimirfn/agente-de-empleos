@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '@nanostores/react';
-import { recentEvents } from '../../stores/activity';
-import { connectToEventStream } from '../../lib/sse-client';
+import { recentEvents } from '../../stores/activity.js';
+import { connectToEventStream } from '../../lib/sse-client.js';
 
 export default function LiveFeed() {
   const events = useStore(recentEvents);

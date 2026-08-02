@@ -23,7 +23,7 @@ export interface ApiSourceScanResult {
 export async function scanApiSource(slug: string): Promise<ApiSourceScanResult> {
   const platform = await db.select().from(platforms).where(eq(platforms.slug, slug)).limit(1);
   if (platform.length === 0) throw new Error(`Platform "${slug}" not found`);
-  const platformId = platform[0].id;
+  const platformId = platform[0]!.id;
 
   const { searchAllSources } = await import('./job-sources/index.js');
 

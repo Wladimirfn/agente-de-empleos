@@ -114,8 +114,8 @@ export default function PlatformsPage() {
         )}
 
         {platforms.map((p) => {
-          const status = STATUS_LABELS[p.status] ?? STATUS_LABELS.active;
-          const health = HEALTH_LABELS[p.healthStatus] ?? HEALTH_LABELS.unknown;
+          const status = STATUS_LABELS[p.status] ?? STATUS_LABELS.active!;
+          const health = HEALTH_LABELS[p.healthStatus] ?? HEALTH_LABELS.unknown!;
           return (
             <div key={p.id} className="rounded-xl border border-border bg-elevated/40 p-5">
               {/* Header */}

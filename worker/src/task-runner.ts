@@ -12,10 +12,10 @@ import { eq, and, isNull, sql, desc } from 'drizzle-orm';
 async function loadLLM(): Promise<LLMProvider> {
   const { createConfiguredProvider } = await import('@employment-agent/llm');
   const rows = await db.select().from(llmSettings).limit(1);
-  if (rows.length === 0) {
+  const row = rows[0];
+  if (!row) {
     throw new Error('No LLM configured. Go to /configuracion and set up a provider.');
   }
-  const row = rows[0];
   return createConfiguredProvider({
     provider: row.provider,
     model: row.model,
@@ -31,7 +31,7 @@ async function ensurePlatform(slug: string, displayName: string): Promise<number
     .insert(platforms)
     .values({ slug, displayName, status: 'active' })
     .returning({ id: platforms.id });
-  return inserted[0].id;
+  return inserted[0]!.id;
 }
 
 /** Insert a job if it doesn't exist, or bump lastSeenAt if it does. Returns 'new' | 'duplicate'. */
@@ -158,7 +158,7 @@ Oferta: ${JSON.stringify({ title: job.title, company: job.company, location: job
 async function loadWorkerProfile(): Promise<CandidateProfile> {
   const rows = await db.select().from(candidateProfiles).limit(1);
   if (rows.length === 0) return {};
-  const p = rows[0];
+  const p = rows[0]!;
   const experiences = await db
     .select()
     .from(candidateExperiences)
@@ -380,7 +380,7 @@ export function registerBuiltinHandlers(): void {
     const summary = profile.summary ?? '';
     const rolesMatch = summary.match(/Roles objetivo activos:\s*(.+)/);
     const targetRoles = rolesMatch
-      ? rolesMatch[1].split(',').map((r) => r.replace(/\s*\(prioridad\s*\d+\)/, '').trim()).filter(Boolean)
+      ? (rolesMatch[1] ?? '').split(',').map((r) => r.replace(/\s*\(prioridad\s*\d+\)/, '').trim()).filter(Boolean)
       : [];
     const shortSkills = (profile.skills ?? [])
       .map((s) => s.name?.trim())
