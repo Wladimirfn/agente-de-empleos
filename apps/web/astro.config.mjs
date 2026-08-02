@@ -1,7 +1,6 @@
 import { defineConfig } from 'astro/config';
 import node from '@astrojs/node';
 import react from '@astrojs/react';
-import tailwind from '@astrojs/tailwind';
 import { config as loadDotenv } from 'dotenv';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,7 +13,6 @@ export default defineConfig({
   adapter: node({ mode: 'standalone' }),
   integrations: [
     react(),
-    tailwind({ applyBaseStyles: false }),
   ],
   server: {
     port: Number(process.env.WEB_PORT ?? 3000),
