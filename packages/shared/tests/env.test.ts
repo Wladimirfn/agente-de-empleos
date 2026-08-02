@@ -18,7 +18,7 @@ describe('root dotenv loading', () => {
   });
 
   it('finds the repo root by walking up from a nested directory', () => {
-    const root = makeRepo({ 'package.json': '{}', 'env.example': 'A=\n' });
+    const root = makeRepo({ 'package.json': '{}', '.env.example': 'A=\n' });
     const nested = path.join(root, 'apps', 'web');
     fs.mkdirSync(nested, { recursive: true });
 
@@ -28,7 +28,7 @@ describe('root dotenv loading', () => {
   it('loads variables from the root .env into process.env', () => {
     const root = makeRepo({
       'package.json': '{}',
-      'env.example': 'ENV_TEST_MARKER=\n',
+      '.env.example': 'ENV_TEST_MARKER=\n',
       '.env': 'ENV_TEST_MARKER=loaded-from-root',
     });
     const nested = path.join(root, 'worker');
@@ -41,7 +41,7 @@ describe('root dotenv loading', () => {
   });
 
   it('returns null when no .env exists at the root', () => {
-    const root = makeRepo({ 'package.json': '{}', 'env.example': 'A=\n' });
+    const root = makeRepo({ 'package.json': '{}', '.env.example': 'A=\n' });
 
     expect(loadRootEnv(root, true)).toBeNull();
   });

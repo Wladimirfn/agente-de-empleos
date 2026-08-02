@@ -7,7 +7,7 @@ let loadedPath: string | null | undefined;
 export function findRepoRoot(startDir: string = process.cwd()): string {
   let dir = path.resolve(startDir);
   for (;;) {
-    if (fs.existsSync(path.join(dir, 'package.json')) && fs.existsSync(path.join(dir, 'env.example'))) {
+    if (fs.existsSync(path.join(dir, 'package.json')) && fs.existsSync(path.join(dir, '.env.example'))) {
       return dir;
     }
     const parent = path.dirname(dir);
