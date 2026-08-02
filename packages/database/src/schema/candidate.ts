@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, index, uniqueIndex, check } from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
 
 export const candidateProfiles = sqliteTable('candidate_profiles', {
@@ -11,7 +11,13 @@ export const candidateProfiles = sqliteTable('candidate_profiles', {
   summary: text('summary'),
   createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text('updated_at').notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+}, (t) => ({
+  // Defense-in-depth: fullName must be non-empty when present.
+  // The application layer (client + confirm endpoint) is the primary gate,
+  // but a CHECK constraint guarantees we can never store a half-applied CV
+  // (where summary/email/phone were overwritten but fullName stayed stale).
+  fullNameNotEmpty: check('candidate_profiles_full_name_not_empty', sql`${t.fullName} IS NULL OR length(${t.fullName}) > 0`),
+}));
 
 export const candidateExperiences = sqliteTable('candidate_experiences', {
   id: integer('id').primaryKey({ autoIncrement: true }),

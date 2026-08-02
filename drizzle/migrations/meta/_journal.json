@@ -57,6 +57,13 @@
       "when": 1785545926657,
       "tag": "0007_scan_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1785703269558,
+      "tag": "0008_add_full_name_required_check",
+      "breakpoints": true
     }
   ]
 }

@@ -54,6 +54,15 @@ export const POST: APIRoute = async ({ request }) => {
   if (!body.storedFilename || typeof body.storedFilename !== 'string') {
     return fail(400, 'Falta storedFilename.');
   }
+
+  // fullName is required. The review form enforces this client-side, but
+  // we re-validate server-side so a half-applied CV can never be persisted:
+  // previously an empty fullName would be ignored, leaving stale fields in
+  // candidate_profiles (e.g. summary/email from the new CV but fullName from
+  // the old one — the mashup bug).
+  if (typeof body.fullName !== 'string' || body.fullName.trim() === '') {
+    return fail(400, 'fullName es requerido y no puede estar vacío.');
+  }
   // Anti-path-traversal: storedFilename es generado por el server (uuid-prefix),
   // pero validamos igual para no escribir fuera de storage/.
   if (body.storedFilename.includes('..') || body.storedFilename.includes('/')) {
@@ -109,10 +118,11 @@ export const POST: APIRoute = async ({ request }) => {
     profileId = inserted[0].id;
   }
 
-  // Si el perfil ya existía pero el user está actualizando campos, los pisamos
-  // solo si el user envió un valor. Esto es consistente con "el humano confirma".
-  const updateSet: Record<string, string> = {};
-  if (body.fullName) updateSet.full_name = body.fullName;
+  // El form es la fuente de verdad final para fullName (ya validado arriba
+  // como no-vacío). Para los demás campos seguimos la convención "el
+  // humano confirma": pisamos solo si el user envió un valor, preservando
+  // lo viejo si el campo viene vacío.
+  const updateSet: Record<string, string> = { full_name: body.fullName.trim() };
   if (body.email) updateSet.email = body.email;
   if (body.phone) updateSet.phone = body.phone;
   if (body.location) updateSet.location = body.location;
