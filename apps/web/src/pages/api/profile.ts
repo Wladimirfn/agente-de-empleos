@@ -50,3 +50,37 @@ export const PUT: APIRoute = async ({ request }) => {
   const updated = await db.select().from(candidateProfiles).where(eq(candidateProfiles.id, profiles[0]!.id));
   return json({ status: 'ok', profile: updated[0] });
 };
+
+/**
+ * DELETE /api/profile
+ *
+ * Resets the candidate workspace: deletes the profile, all its experiences,
+ * skills, target roles, document records, profile proposals, chat history
+ * (messages + memory facts + summaries), job matches, match feedback, and
+ * applications. The CV files on disk are intentionally left in place (they
+ * are tracked by hash; a future upload of the same file will be deduped
+ * via the file_hash unique index, not recreated).
+ *
+ * Settings are NOT touched:
+ * - `llm_settings` is device-level config (which provider/model to use),
+ *   not candidate data. Re-entering it after a profile reset would be
+ *   unnecessary friction.
+ * - `scan_settings` is unrelated to a specific profile.
+ *
+ * Returns 404 if there is no profile to delete.
+ */
+export const DELETE: APIRoute = async () => {
+  const profiles = await db.select({ id: candidateProfiles.id }).from(candidateProfiles).limit(1);
+  if (profiles.length === 0) {
+    return json({ error: 'No hay perfil para borrar.', code: 'NOT_FOUND' }, 404);
+  }
+
+  // SQLite ON DELETE CASCADE handles every related table (experiences,
+  // skills, documents, target roles, proposals, chat_messages,
+  // chat_memory_facts, chat_summaries, job_matches, match_feedback,
+  // applications) as long as foreign_keys is ON, which the database client
+  // sets on every connection (packages/database/src/client.ts).
+  await db.delete(candidateProfiles).where(eq(candidateProfiles.id, profiles[0]!.id));
+
+  return json({ ok: true });
+};

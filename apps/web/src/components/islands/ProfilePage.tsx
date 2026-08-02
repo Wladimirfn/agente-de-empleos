@@ -54,6 +54,10 @@ export default function ProfilePage() {
   const [addingRole, setAddingRole] = useState(false);
   const [searchScopes, setSearchScopes] = useState<string[]>(['local']);
   const [savingScope, setSavingScope] = useState(false);
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  const [confirmText, setConfirmText] = useState('');
+  const [resetting, setResetting] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
@@ -157,6 +161,23 @@ export default function ProfilePage() {
       await load();
     } finally {
       setResolvingId(null);
+    }
+  }
+
+  async function resetProfile() {
+    setResetting(true);
+    setResetError(null);
+    try {
+      const response = await fetch('/api/profile', { method: 'DELETE' });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error ?? `Error ${response.status}`);
+      }
+      // Hard reload so every island re-fetches its data with the empty state.
+      window.location.href = '/';
+    } catch (err) {
+      setResetError(err instanceof Error ? err.message : String(err));
+      setResetting(false);
     }
   }
 
@@ -397,7 +418,74 @@ export default function ProfilePage() {
             </div>
           </section>
         )}
+
+        {/* Reset profile */}
+        <section className="rounded-xl border border-danger/30 bg-danger/5 p-5">
+          <h2 className="text-sm font-semibold text-danger">Zona peligrosa</h2>
+          <p className="mt-1 text-xs text-fg-muted">
+            Borrar tu perfil elimina el perfil, experiencias, skills, roles objetivo,
+            documentos, propuestas pendientes, historial de chat, postulaciones y matches.
+            La configuración del proveedor de IA no se toca.
+          </p>
+          <button
+            type="button"
+            onClick={() => { setConfirmingReset(true); setConfirmText(''); setResetError(null); }}
+            className="mt-3 rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs font-medium text-danger hover:bg-danger/20"
+          >
+            Borrar perfil y empezar de cero
+          </button>
+        </section>
       </div>
+
+      {/* Reset confirmation modal */}
+      {confirmingReset && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="reset-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={(e) => { if (e.target === e.currentTarget) setConfirmingReset(false); }}
+        >
+          <div className="w-full max-w-md rounded-xl border border-danger/40 bg-background p-6 shadow-2xl">
+            <h2 id="reset-title" className="text-base font-semibold text-danger">Confirmar borrado</h2>
+            <p className="mt-2 text-xs text-fg-muted">
+              Esta acción no se puede deshacer. Vas a perder todo el historial del
+              perfil y de chat con el agente.
+            </p>
+            <label className="mt-4 block text-xs">
+              <span className="text-foreground">Escribí <strong>BORRAR</strong> para habilitar el botón:</span>
+              <input
+                type="text"
+                value={confirmText}
+                onChange={(e) => setConfirmText(e.target.value)}
+                className="mt-1 w-full rounded border border-border bg-elevated px-3 py-2 font-mono text-sm focus:border-danger focus:outline-none"
+                autoFocus
+              />
+            </label>
+            {resetError && (
+              <p className="mt-3 rounded border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-300">{resetError}</p>
+            )}
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => { setConfirmingReset(false); setConfirmText(''); setResetError(null); }}
+                disabled={resetting}
+                className="rounded-lg border border-border px-3 py-2 text-xs hover:bg-elevated disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={resetProfile}
+                disabled={confirmText.trim() !== 'BORRAR' || resetting}
+                className="rounded-lg bg-danger px-3 py-2 text-xs font-medium text-background hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {resetting ? 'Borrando…' : 'Borrar definitivamente'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
