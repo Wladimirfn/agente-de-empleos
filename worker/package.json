@@ -13,9 +13,9 @@
     "@employment-agent/database": "*",
     "@employment-agent/domain": "*",
     "@employment-agent/llm": "*",
-    "@employment-agent/skill-runtime": "*",
     "@employment-agent/shared": "*",
-    "node-cron": "^3.0.3",
+    "@employment-agent/skill-runtime": "*",
+    "node-cron": "^4.6.0",
     "playwright": "^1.48.0"
   },
   "devDependencies": {

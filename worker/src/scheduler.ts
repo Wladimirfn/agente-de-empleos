@@ -1,4 +1,5 @@
 import cron from 'node-cron';
+import type { ScheduledTask } from 'node-cron';
 import { db } from '@employment-agent/database';
 import { scanSettings } from '@employment-agent/database/schema';
 import { enqueueTask } from './task-queue.js';
@@ -6,7 +7,7 @@ import { enqueueTask } from './task-queue.js';
 const DEFAULT_INTERVAL_MINUTES = 30;
 const TICK_CRON = '* * * * *'; // check once per minute
 
-let scheduled: cron.ScheduledTask | null = null;
+let scheduled: ScheduledTask | null = null;
 let lastRunAt = 0;
 
 interface ScanConfig {
