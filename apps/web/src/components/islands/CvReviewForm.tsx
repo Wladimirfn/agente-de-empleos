@@ -43,6 +43,13 @@ export default function CvReviewForm() {
   const [parsed, setParsed] = useState<Extract<UploadResponse, { ok: true }>['parsed'] | null>(null);
   const [form, setForm] = useState<ConfirmPayload>(emptyConfirm);
   const [savedProfileId, setSavedProfileId] = useState<number | null>(null);
+  const [fullNameTouched, setFullNameTouched] = useState(false);
+
+  const fullNameError = fullNameTouched && form.fullName.trim() === ''
+    ? 'El nombre es obligatorio. Si el parser no lo detectó, tipealo manualmente.'
+    : null;
+
+  const canConfirm = form.fullName.trim() !== '';
 
   const handleUpload = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -85,6 +92,11 @@ export default function CvReviewForm() {
   const handleConfirm = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError(null);
+    setFullNameTouched(true);
+    if (!canConfirm) {
+      setError('El nombre completo es obligatorio.');
+      return;
+    }
     setConfirming(true);
     try {
       const res = await fetch('/api/cvs/confirm', {
@@ -117,6 +129,7 @@ export default function CvReviewForm() {
   const updateField = (key: keyof Omit<ConfirmPayload, 'storedFilename'>) =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       setForm((f) => ({ ...f, [key]: e.target.value }));
+      if (key === 'fullName') setFullNameTouched(true);
     };
 
   if (step === 'done') {
@@ -170,13 +183,23 @@ export default function CvReviewForm() {
 
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <label className="block text-sm">
-              <span className="text-foreground">Nombre completo</span>
+              <span className="text-foreground">
+                Nombre completo <span className="text-red-400" aria-hidden="true">*</span>
+              </span>
               <input
                 type="text"
+                required
+                aria-required="true"
+                aria-invalid={fullNameError !== null}
+                aria-describedby={fullNameError ? 'fullName-error' : undefined}
                 value={form.fullName}
                 onChange={updateField('fullName')}
-                className="mt-1 w-full rounded border border-border bg-background/60 px-3 py-2 text-sm focus:border-accent focus:outline-none"
+                onBlur={() => setFullNameTouched(true)}
+                className={`mt-1 w-full rounded border bg-background/60 px-3 py-2 text-sm focus:outline-none ${fullNameError ? 'border-red-500 focus:border-red-500' : 'border-border focus:border-accent'}`}
               />
+              {fullNameError && (
+                <span id="fullName-error" className="mt-1 block text-xs text-red-400">{fullNameError}</span>
+              )}
             </label>
             <label className="block text-sm">
               <span className="text-foreground">Email</span>
@@ -252,7 +275,7 @@ export default function CvReviewForm() {
           <div className="flex items-center gap-2">
             <button
               type="submit"
-              disabled={confirming}
+              disabled={confirming || !canConfirm}
               className="rounded bg-accent px-4 py-2 text-sm font-medium text-slate-900 hover:bg-accent/90 disabled:opacity-50"
             >
               {confirming ? 'Guardando…' : 'Guardar perfil'}

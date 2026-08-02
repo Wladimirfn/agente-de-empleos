@@ -54,6 +54,15 @@ export const POST: APIRoute = async ({ request }) => {
   if (!body.storedFilename || typeof body.storedFilename !== 'string') {
     return fail(400, 'Falta storedFilename.');
   }
+
+  // fullName is required. The review form enforces this client-side, but
+  // we re-validate server-side so a half-applied CV can never be persisted:
+  // previously an empty fullName would be ignored, leaving stale fields in
+  // candidate_profiles (e.g. summary/email from the new CV but fullName from
+  // the old one — the mashup bug).
+  if (typeof body.fullName !== 'string' || body.fullName.trim() === '') {
+    return fail(400, 'fullName es requerido y no puede estar vacío.');
+  }
   // Anti-path-traversal: storedFilename es generado por el server (uuid-prefix),
   // pero validamos igual para no escribir fuera de storage/.
   if (body.storedFilename.includes('..') || body.storedFilename.includes('/')) {
@@ -109,17 +118,19 @@ export const POST: APIRoute = async ({ request }) => {
     profileId = inserted[0].id;
   }
 
-  // Si el perfil ya existía pero el user está actualizando campos, los pisamos
-  // solo si el user envió un valor. Esto es consistente con "el humano confirma".
-  const updateSet: Record<string, string> = {};
-  if (body.fullName) updateSet.full_name = body.fullName;
+  // Build the profile update set up front so we can apply it together with
+  // the audit columns in a single UPDATE (after the document insert gives
+  // us the document id). fullName is always written (the form is the
+  // source of truth for that field); other fields keep the
+  // "preserve if blank" convention so this stays scoped to the field that
+  // was causing the profile mashup.
+  const updateSet: Record<string, string | number | null> = {
+    full_name: body.fullName.trim(),
+  };
   if (body.email) updateSet.email = body.email;
   if (body.phone) updateSet.phone = body.phone;
   if (body.location) updateSet.location = body.location;
   if (body.summary) updateSet.summary = body.summary;
-  if (Object.keys(updateSet).length > 0) {
-    await db.update(candidateProfiles).set(updateSet).where(eq(candidateProfiles.id, profileId));
-  }
 
   // Replace experiences: delete old, insert new if provided.
   if (Array.isArray(body.experiences)) {
@@ -174,6 +185,14 @@ export const POST: APIRoute = async ({ request }) => {
     .returning({ id: candidateDocuments.id });
 
   if (!insertedDoc[0]) return fail(500, 'No se pudo registrar el documento.');
+
+  // Single profile UPDATE: apply the parsed field changes AND record the
+  // audit trail (which document just replaced this profile, and when).
+  // Combined so the audit timestamp can never drift from the actual data
+  // overwrite if anything fails between them.
+  updateSet.superseded_by_document_id = insertedDoc[0].id;
+  updateSet.superseded_at = new Date().toISOString();
+  await db.update(candidateProfiles).set(updateSet).where(eq(candidateProfiles.id, profileId));
 
   return new Response(
     JSON.stringify({ ok: true, documentId: insertedDoc[0].id, profileId }),
