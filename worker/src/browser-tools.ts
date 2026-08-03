@@ -39,10 +39,53 @@ export interface BrowserAgentTools {
 const MAX_TEXT_LENGTH = 3000;
 const MAX_ELEMENTS = 50;
 const NAV_TIMEOUT = 20_000;
+const MAX_SAFE_URL_LENGTH = 500;
+export const BACK_NAVIGATION_DISABLED = 'Back navigation is disabled by approved-origin policy.';
+export const NAVIGATION_POLICY_ERROR = 'Navigation blocked by approved-origin policy.';
+
+export function rejectBackNavigation(): string {
+  return BACK_NAVIGATION_DISABLED;
+}
+
+export function isApprovedOrigin(url: string, approvedOrigin: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return !parsed.username && !parsed.password && parsed.origin === approvedOrigin;
+  } catch { return false; }
+}
+
+export function sanitizeUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) return '[blocked URL]';
+    return `${parsed.origin}${parsed.pathname}`.slice(0, MAX_SAFE_URL_LENGTH);
+  } catch { return '[invalid URL]'; }
+}
+
+export function hasUrlCredentials(url: string): boolean {
+  try { const parsed = new URL(url); return Boolean(parsed.username || parsed.password); }
+  catch { return false; }
+}
+
+export function sanitizeOutbound<T>(value: T, depth = 0): T {
+  if (depth > 8) return '[redacted]' as T;
+  if (typeof value === 'string') return (/^(?:[a-z][a-z\d+.-]*:\/\/|about:|data:|javascript:)\S*$/i.test(value) ? sanitizeUrl(value) : value.replace(/https?:\/\/[^\s<>"']+/gi, (url) => sanitizeUrl(url))).slice(0, MAX_TEXT_LENGTH) as T;
+  if (Array.isArray(value)) return value.slice(0, 100).map((item) => sanitizeOutbound(item, depth + 1)) as T;
+  if (value && typeof value === 'object') return Object.fromEntries(new Map(
+    Object.entries(value).slice(0, 100).map(([key, item]) => [sanitizeUrlsInText(key), sanitizeOutbound(item, depth + 1)]),
+  )) as T;
+  return value;
+}
+
+export function sanitizeUrlsInText(text: string): string { return sanitizeOutbound(text); }
+export function sanitizePageState(state: PageState): PageState {
+  return sanitizeOutbound(state);
+}
 
 export async function createBrowserTools(opts?: {
   headless?: boolean;
   storageState?: string;
+  approvedOrigin?: string;
 }): Promise<BrowserAgentTools> {
   const headless = opts?.headless ?? false;
   const browser: Browser = await chromium.launch({
@@ -62,6 +105,40 @@ export async function createBrowserTools(opts?: {
 
   const context: BrowserContext = await browser.newContext(contextOptions);
   const page: Page = await context.newPage();
+  let policyBlocked = false;
+  let lastApprovedUrl = opts?.approvedOrigin ?? '';
+  if (opts?.approvedOrigin) {
+    await context.route('**/*', async (route) => {
+      const request = route.request();
+      const navigation = request.isNavigationRequest();
+      const block = async () => {
+        if (navigation) policyBlocked = true;
+        await route.abort('blockedbyclient');
+        if (navigation) try {
+          const owner = request.frame().page();
+          if (owner !== page) await owner.close();
+        } catch { /* detached popup/frame */ }
+      };
+      if (!isApprovedOrigin(request.url(), opts.approvedOrigin!)) return block();
+      try {
+        const response = await route.fetch({ maxRedirects: 0 });
+        const location = response.headers().location;
+        if (response.status() >= 300 && response.status() < 400 && location
+          && !isApprovedOrigin(new URL(location, request.url()).href, opts.approvedOrigin!)) return block();
+        await route.fulfill({ response });
+      } catch {
+        await route.abort('failed');
+      }
+    });
+  }
+  const policyResult = async () => {
+    if (!policyBlocked) return null;
+    await page.waitForTimeout(50);
+    if (lastApprovedUrl && page.url() !== lastApprovedUrl) {
+      await page.goto(lastApprovedUrl, { timeout: NAV_TIMEOUT, waitUntil: 'domcontentloaded' });
+    }
+    return NAVIGATION_POLICY_ERROR;
+  };
 
   // Track interactive elements found in the last extractPage call
   // so click/type can reference them by index.
@@ -145,7 +222,7 @@ export async function createBrowserTools(opts?: {
     }, MAX_ELEMENTS);
 
     currentElements = elements;
-    return { url, title, text, elements };
+    return sanitizePageState({ url, title, text, elements });
   }
 
   function findSelector(index: number): string | null {
@@ -161,17 +238,23 @@ export async function createBrowserTools(opts?: {
 
   return {
     async navigate(url: string): Promise<string> {
+      policyBlocked = false;
+      if (opts?.approvedOrigin && !isApprovedOrigin(url, opts.approvedOrigin)) return NAVIGATION_POLICY_ERROR;
       try {
         await page.goto(url, { timeout: NAV_TIMEOUT, waitUntil: 'domcontentloaded' });
-        return `Navigated to ${page.url()} — "${await page.title()}"`;
-      } catch (err) {
-        return `Navigation failed: ${err instanceof Error ? err.message : String(err)}`;
+        const blocked = await policyResult(); if (blocked) return blocked;
+        lastApprovedUrl = page.url();
+        return `Navigated to ${sanitizeUrl(page.url())} — "${sanitizeUrlsInText(await page.title())}"`;
+      } catch {
+        return await policyResult() ?? 'Navigation failed.';
       }
     },
 
     async click(index: number): Promise<string> {
+      policyBlocked = false;
       const el = currentElements[index];
       if (!el) return `No element at index ${index}. Call extract_page first.`;
+      if (el.href && opts?.approvedOrigin && !isApprovedOrigin(el.href, opts.approvedOrigin)) return NAVIGATION_POLICY_ERROR;
       try {
         // Try multiple selector strategies
         const selector = findSelector(index);
@@ -185,13 +268,16 @@ export async function createBrowserTools(opts?: {
         }
         await page.waitForLoadState('domcontentloaded').catch(() => undefined);
         await page.waitForTimeout(500);
-        return `Clicked "${el.text}" — now on ${page.url()}`;
-      } catch (err) {
-        return `Click failed on "${el.text}": ${err instanceof Error ? err.message : String(err)}`;
+        const blocked = await policyResult(); if (blocked) return blocked;
+        lastApprovedUrl = page.url();
+        return `Clicked "${sanitizeUrlsInText(el.text)}" — now on ${sanitizeUrl(page.url())}`;
+      } catch {
+        return await policyResult() ?? 'Click failed.';
       }
     },
 
     async typeText(index: number, text: string): Promise<string> {
+      policyBlocked = false;
       const el = currentElements[index];
       if (!el) return `No element at index ${index}. Call extract_page first.`;
       try {
@@ -202,17 +288,22 @@ export async function createBrowserTools(opts?: {
           const locator = page.locator(`${el.tag}[placeholder]`).first();
           await locator.fill(text, { timeout: 5000 });
         }
-        return `Typed "${text}" into ${el.placeholder ?? el.id ?? el.tag}`;
-      } catch (err) {
-        return `Type failed: ${err instanceof Error ? err.message : String(err)}`;
+        const blocked = await policyResult(); if (blocked) return blocked;
+        if (isApprovedOrigin(page.url(), opts?.approvedOrigin ?? new URL(page.url()).origin)) lastApprovedUrl = page.url();
+        return `Entered text into ${sanitizeUrlsInText(el.placeholder ?? el.id ?? el.tag)}`;
+      } catch {
+        return 'Type failed.';
       }
     },
 
     async pressEnter(): Promise<string> {
+      policyBlocked = false;
       await page.keyboard.press('Enter');
       await page.waitForLoadState('domcontentloaded').catch(() => undefined);
       await page.waitForTimeout(1000);
-      return `Pressed Enter — now on ${page.url()}`;
+      const blocked = await policyResult(); if (blocked) return blocked;
+      lastApprovedUrl = page.url();
+      return `Pressed Enter — now on ${sanitizeUrl(page.url())}`;
     },
 
     async scroll(direction: 'up' | 'down'): Promise<string> {
@@ -223,9 +314,7 @@ export async function createBrowserTools(opts?: {
     },
 
     async goBack(): Promise<string> {
-      await page.goBack({ timeout: NAV_TIMEOUT }).catch(() => null);
-      await page.waitForTimeout(500);
-      return `Went back to ${page.url()}`;
+      return rejectBackNavigation();
     },
 
     extractPage,
@@ -233,25 +322,26 @@ export async function createBrowserTools(opts?: {
     async waitForHuman(message: string): Promise<string> {
       // In headed mode, we pause and emit an event so the user knows
       // human intervention is needed (e.g. CAPTCHA).
-      console.log(`[browser-agent] HUMAN NEEDED: ${message}`);
-      console.log(`[browser-agent] Page URL: ${page.url()}`);
+      const safeMessage = sanitizeUrlsInText(message);
+      console.log(`[browser-agent] HUMAN NEEDED: ${safeMessage}`);
+      console.log(`[browser-agent] Page URL: ${sanitizeUrl(page.url())}`);
       // Wait up to 5 minutes for the URL to change (user solved the challenge)
       const startUrl = page.url();
       const deadline = Date.now() + 5 * 60_000;
       while (Date.now() < deadline) {
         await page.waitForTimeout(2000);
         if (page.url() !== startUrl) {
-          return `Human resolved the challenge. Now on ${page.url()}`;
+          return `Human resolved the challenge. Now on ${sanitizeUrl(page.url())}`;
         }
         // Also check if Cloudflare challenge elements are gone
         const hasChallenge = await page.evaluate(() => {
           return !!document.querySelector('#challenge-form, .cf-challenge, #turnstile-wrapper');
         });
         if (!hasChallenge) {
-          return `Challenge appears resolved. Continuing on ${page.url()}`;
+          return `Challenge appears resolved. Continuing on ${sanitizeUrl(page.url())}`;
         }
       }
-      return `Timeout waiting for human intervention on ${page.url()}`;
+      return `Timeout waiting for human intervention on ${sanitizeUrl(page.url())}`;
     },
 
     async close(): Promise<void> {

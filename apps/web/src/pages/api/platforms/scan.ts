@@ -1,9 +1,9 @@
 import type { APIRoute } from 'astro';
 import { db } from '@employment-agent/database';
-import { platforms, taskQueue } from '@employment-agent/database/schema';
+import { platforms, platformSkills } from '@employment-agent/database/schema';
 import { eq } from 'drizzle-orm';
-import { randomUUID } from 'node:crypto';
 import { API_SOURCES, scanApiSource } from '../../../lib/scan-api-source.js';
+import { enqueuePlatformScan, platformScanTaskType } from '../../../lib/platform-onboarding.js';
 
 export const prerender = false;
 
@@ -47,49 +47,29 @@ export const POST: APIRoute = async ({ request }) => {
     }
   }
 
-  // Browser-based source: enqueue a task for the worker.
-  // mode=agent uses the LLM browser agent directly; default uses the deterministic skill.
-  const mode = typeof obj.mode === 'string' ? obj.mode : 'skill';
-  const taskId = randomUUID();
-
-  if (mode === 'agent') {
-    await db.insert(taskQueue).values({
-      id: taskId,
-      type: 'BROWSER_AGENT_SCAN',
-      payloadJson: JSON.stringify({
-        skillSlug: slug,
-        platformUrl: platform[0]!.baseUrl ?? `https://www.${slug}.cl`,
-        triggeredBy: 'web-ui-agent',
-      }),
-      status: 'pending',
-      attempts: 0,
-      maxAttempts: 1,
-      scheduledAt: new Date().toISOString(),
-    });
+  const mode = typeof obj.mode === 'string' ? obj.mode : 'auto';
+  const installed = await db.select({ id: platformSkills.id }).from(platformSkills)
+    .where(eq(platformSkills.platformId, platform[0]!.id)).limit(1);
+  const useAgent = platformScanTaskType(installed.length > 0, mode === 'agent') === 'BROWSER_AGENT_SCAN';
+  if (useAgent) {
+    if (!platform[0]!.baseUrl) return json({ error: 'Platform has no URL for browser scanning' }, 400);
+    const agentTaskId = await enqueuePlatformScan({ slug, url: platform[0]!.baseUrl }, 'web-ui');
     return json({
       scanned: false,
       source: 'browser-agent',
       slug,
-      taskId,
-      message: 'Agente LLM encolado. Abrirá un navegador para buscar manualmente.',
+      taskId: agentTaskId,
+      message: agentTaskId ? 'Agente LLM encolado. Abrirá un navegador para buscar manualmente.' : 'Ya existe un escaneo activo para esta plataforma.',
     });
   }
 
-  await db.insert(taskQueue).values({
-    id: taskId,
-    type: 'SCAN_PLATFORM',
-    payloadJson: JSON.stringify({ skillSlug: slug, triggeredBy: 'web-ui' }),
-    status: 'pending',
-    attempts: 0,
-    maxAttempts: 3,
-    scheduledAt: new Date().toISOString(),
-  });
+  const taskId = await enqueuePlatformScan({ slug }, 'web-ui', 'SCAN_PLATFORM');
 
   return json({
     scanned: false,
     source: 'worker',
     slug,
     taskId,
-    message: 'Tarea encolada. El worker la procesará en los próximos segundos.',
+    message: taskId ? 'Tarea encolada. El worker la procesará en los próximos segundos.' : 'Ya existe un escaneo activo para esta plataforma.',
   });
 };
