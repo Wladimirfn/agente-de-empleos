@@ -165,6 +165,8 @@ function sanitizeText(value: string): string {
     .replace(/\bbearer\s+[A-Za-z0-9._-]+/gi, 'Bearer <token>')
     .replace(/\bsk-live-[A-Za-z0-9_-]+/gi, 'sk-live-<redacted>')
     .replace(/([?&])(key|api[_-]?key|token)=([^&\s]+)/gi, '$1$2=<redacted>')
+    .replace(/\bcf-mitigated\b/gi, 'cf-mitigated')
+    .replace(/\bcf[-_ ]?ray(?:\s*id)?\s*[:=]?\s*[a-z0-9-]+/gi, 'cf-ray')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -199,22 +201,82 @@ async function resolveClient(opts: TrabajandoScanOptions): Promise<{ client: Lis
   };
 }
 
+// Cloudflare / blocked vocabulary — intentionally duplicated from
+// `skills/empleosaqua/index.ts` per skill-isolation (Trabajando.cl must
+// remain independent of other runtime surfaces).
+const CHALLENGE_MARKERS = ['cf-mitigated', 'challenge-running', 'just a moment', 'attention required', 'verify you are human', 'checking your browser'];
+const BLOCKED_MARKERS = ['access denied', 'forbidden', 'service unavailable', 'http 403', 'http 500'];
+
+export type PortalResponseKind = 'jobs' | 'challenge' | 'blocked' | 'redirect' | 'error';
+
+function isApprovedFinalUrl(finalUrl: string | undefined): boolean {
+  if (!finalUrl) return false;
+  try { return isApprovedHost(new URL(finalUrl).hostname); } catch { return false; }
+}
+
+export function classifyPortalResponse(status: number, body: string, finalUrl?: string): PortalResponseKind {
+  if (status >= 300 && status < 400) return isApprovedFinalUrl(finalUrl) ? 'jobs' : 'redirect';
+  if (status >= 200 && status < 300) {
+    const lower = body.toLowerCase();
+    if (CHALLENGE_MARKERS.some((marker) => lower.includes(marker))) return 'challenge';
+    if (BLOCKED_MARKERS.some((marker) => lower.includes(marker))) return 'blocked';
+    return 'jobs';
+  }
+  return 'error';
+}
+
+export class ChallengeBlockedError extends Error {
+  readonly kind = 'TRABAJANDO_CHALLENGE' as const;
+  readonly code = 'TRABAJANDO_CHALLENGE' as const;
+  constructor() { super('Portal requires human verification; cannot scan from this environment'); this.name = 'ChallengeBlockedError'; }
+}
+export class BlockedPortalError extends Error {
+  readonly kind = 'TRABAJANDO_BLOCKED' as const;
+  readonly code = 'TRABAJANDO_BLOCKED' as const;
+  constructor() { super('Portal has blocked this client; cannot scan from this environment'); this.name = 'BlockedPortalError'; }
+}
+export class TransportError extends Error {
+  readonly kind = 'TRABAJANDO_TRANSPORT' as const;
+  readonly code = 'TRABAJANDO_TRANSPORT' as const;
+  constructor(message: string) { super(message); this.name = 'TransportError'; }
+}
+
 async function fetchSitemap(client: ListingsFetch, url: string): Promise<string> {
   ensureApprovedOrigin(url);
   const response = await client.get(url, { timeout: REQUEST_TIMEOUT_MS });
   const status = response.status();
-  if (status >= 200 && status < 300) return response.text();
-  if (status >= 300 && status < 400) throw new Error(`Redirect no resuelto para <url>`);
-  throw new Error(`Trabajando sitemap HTTP ${status} (<url>)`);
+  const finalUrl = response.url?.();
+  const text = await response.text();
+  if (status >= 300 && status < 400) {
+    if (isApprovedFinalUrl(finalUrl)) return text;
+    throw new TransportError('Redirect fuera del host aprobado');
+  }
+  if (status >= 200 && status < 300) {
+    const kind = classifyPortalResponse(status, text, finalUrl);
+    if (kind === 'challenge') throw new ChallengeBlockedError();
+    if (kind === 'blocked') throw new BlockedPortalError();
+    return text;
+  }
+  throw new TransportError(`Trabajando sitemap HTTP ${status} (<url>)`);
 }
 
 async function fetchJobPostingJsonLd(client: ListingsFetch, url: string): Promise<JsonLdJobPosting | null> {
   ensureApprovedOrigin(url);
   const response = await client.get(url, { timeout: REQUEST_TIMEOUT_MS });
   const status = response.status();
-  if (status >= 200 && status < 300) return parseJobPostingJsonLd(await response.text());
-  if (status >= 300 && status < 400) throw new Error(`Redirect no resuelto para <url>`);
-  throw new Error(`Trabajando detail HTTP ${status} (<url>)`);
+  const finalUrl = response.url?.();
+  const text = await response.text();
+  if (status >= 300 && status < 400) {
+    if (isApprovedFinalUrl(finalUrl)) return parseJobPostingJsonLd(text);
+    throw new TransportError('Redirect fuera del host aprobado');
+  }
+  if (status >= 200 && status < 300) {
+    const kind = classifyPortalResponse(status, text, finalUrl);
+    if (kind === 'challenge') throw new ChallengeBlockedError();
+    if (kind === 'blocked') throw new BlockedPortalError();
+    return parseJobPostingJsonLd(text);
+  }
+  throw new TransportError(`Trabajando detail HTTP ${status} (<url>)`);
 }
 
 interface ScanStats { jobsFound: number; jobsDuplicate: number; errors: number }
@@ -245,31 +307,52 @@ export const trabajandoSkill: PlatformSkill = {
     try {
       sitemapXml = await fetchSitemap(resolved.client, buildSitemapUrl('offers'));
     } catch (err) {
+      if (err instanceof ChallengeBlockedError || err instanceof BlockedPortalError) {
+        try { if (resolved.owned && resolved.dispose) await resolved.dispose(); } catch { /* swallow */ }
+        await ctx.events.emit({ kind: 'scan_error', message: err.message, payload: { code: err.code, reason: err instanceof ChallengeBlockedError ? 'challenge' : 'blocked' } });
+        await ctx.events.emit({ kind: 'scan_completed', message: `Escaneo de Trabajando.cl detenido: ${err.message}`, payload: { jobsFound: 0, errors: 1 } });
+        return { jobsFound: 0, jobsNew: 0, jobsDuplicate: 0, errors: 1 };
+      }
       stats.errors++;
       await ctx.events.emit({ kind: 'scan_error', message: `Error consultando Trabajando.cl: ${sanitizeText(err instanceof Error ? err.message : String(err))}`, payload: { code: 'TRABAJANDO_FETCH' } });
     }
-    const allCards = parseOffersSitemap(sitemapXml);
-    if (allCards.length === 0) {
-      try { if (resolved.owned && resolved.dispose) await resolved.dispose(); } catch { /* swallow */ }
-      await ctx.events.emit({ kind: 'scan_completed', message: 'Escaneo de Trabajando.cl detenido: sitemap sin ofertas', payload: { jobsFound: 0, errors: stats.errors } });
-      return { jobsFound: 0, jobsNew: 0, jobsDuplicate: 0, errors: stats.errors };
-    }
-    const matched = filterOffersByQueries(allCards, queries).slice(0, MAX_OFFERS_PER_SCAN);
-    for (const card of matched) {
-      if (now() >= deadline) break;
-      if (seen.has(card.externalId)) { stats.jobsDuplicate++; continue; }
-      seen.add(card.externalId);
-      let job = normalizeListing(card, null);
-      if (now() < deadline) {
-        try {
-          const jsonLd = await fetchJobPostingJsonLd(resolved.client, card.url);
-          if (jsonLd) job = normalizeListing(card, jsonLd);
-        } catch { /* keep listing-only metadata */ }
+    let blocked: ChallengeBlockedError | BlockedPortalError | null = null;
+    try {
+      const allCards = parseOffersSitemap(sitemapXml);
+      if (allCards.length === 0) {
+        try { if (resolved.owned && resolved.dispose) await resolved.dispose(); } catch { /* swallow */ }
+        await ctx.events.emit({ kind: 'scan_completed', message: 'Escaneo de Trabajando.cl detenido: sitemap sin ofertas', payload: { jobsFound: 0, errors: stats.errors } });
+        return { jobsFound: 0, jobsNew: 0, jobsDuplicate: 0, errors: stats.errors };
       }
-      stats.jobsFound++;
-      await ctx.events.emit({ kind: 'job_found', message: sanitizeText(`Encontrada: ${job.title}${job.company ? ` en ${job.company}` : ''}`), payload: sanitizeJobPayload(job as unknown as Record<string, unknown>) });
+      const matched = filterOffersByQueries(allCards, queries).slice(0, MAX_OFFERS_PER_SCAN);
+      for (const card of matched) {
+        if (now() >= deadline) break;
+        if (seen.has(card.externalId)) { stats.jobsDuplicate++; continue; }
+        seen.add(card.externalId);
+        let job = normalizeListing(card, null);
+        if (now() < deadline) {
+          try {
+            const jsonLd = await fetchJobPostingJsonLd(resolved.client, card.url);
+            if (jsonLd) job = normalizeListing(card, jsonLd);
+          } catch (err) {
+            if (err instanceof ChallengeBlockedError || err instanceof BlockedPortalError) throw err;
+            /* keep listing-only metadata on transport errors */
+          }
+        }
+        stats.jobsFound++;
+        await ctx.events.emit({ kind: 'job_found', message: sanitizeText(`Encontrada: ${job.title}${job.company ? ` en ${job.company}` : ''}`), payload: sanitizeJobPayload(job as unknown as Record<string, unknown>) });
+      }
+    } catch (err) {
+      if (err instanceof ChallengeBlockedError || err instanceof BlockedPortalError) blocked = err;
+      else throw err;
+    } finally {
+      try { if (resolved.owned && resolved.dispose) await resolved.dispose(); } catch { /* swallow */ }
     }
-    try { if (resolved.owned && resolved.dispose) await resolved.dispose(); } catch { /* swallow */ }
+    if (blocked) {
+      await ctx.events.emit({ kind: 'scan_error', message: blocked.message, payload: { code: blocked.code, reason: blocked instanceof ChallengeBlockedError ? 'challenge' : 'blocked' } });
+      await ctx.events.emit({ kind: 'scan_completed', message: `Escaneo de Trabajando.cl detenido: ${blocked.message}`, payload: { jobsFound: 0, errors: 1 } });
+      return { jobsFound: 0, jobsNew: 0, jobsDuplicate: 0, errors: 1 };
+    }
     await ctx.events.emit({ kind: 'scan_completed', message: `Escaneo de Trabajando.cl completado: ${stats.jobsFound} ofertas encontradas`, payload: { jobsFound: stats.jobsFound, errors: stats.errors } });
     return { jobsFound: stats.jobsFound, jobsNew: stats.jobsFound, jobsDuplicate: stats.jobsDuplicate, errors: stats.errors };
   },
@@ -285,16 +368,22 @@ export const trabajandoSkill: PlatformSkill = {
       const response = await resolved.client.get(buildSitemapUrl('index'), { timeout: REQUEST_TIMEOUT_MS });
       const status = response.status();
       const finalUrl = response.url?.() ?? buildSitemapUrl('index');
+      const text = await response.text();
       if (status >= 300 && status < 400) {
         try { ensureApprovedOrigin(finalUrl); return { status: 'healthy', schemaVersion: '0.1.0', detectedAt }; }
         catch { return { status: 'degraded', schemaVersion: '0.1.0', detectedAt }; }
       }
       if (status >= 200 && status < 300) {
+        const kind = classifyPortalResponse(status, text, finalUrl);
+        if (kind === 'challenge') return { status: 'needs-human', schemaVersion: '0.1.0', detectedAt, lastError: { code: 'TRABAJANDO_CHALLENGE', message: new ChallengeBlockedError().message } };
+        if (kind === 'blocked') return { status: 'needs-human', schemaVersion: '0.1.0', detectedAt, lastError: { code: 'TRABAJANDO_BLOCKED', message: new BlockedPortalError().message } };
         try { ensureApprovedOrigin(finalUrl); return { status: 'healthy', schemaVersion: '0.1.0', detectedAt }; }
         catch { return { status: 'broken', schemaVersion: '0.1.0', detectedAt, lastError: { code: 'TRABAJANDO_HTTP', message: 'probe landed on a foreign origin' } }; }
       }
       return { status: 'broken', schemaVersion: '0.1.0', detectedAt, lastError: { code: 'TRABAJANDO_HTTP', message: `HTTP ${status}` } };
     } catch (err) {
+      if (err instanceof ChallengeBlockedError) return { status: 'needs-human', schemaVersion: '0.1.0', detectedAt, lastError: { code: 'TRABAJANDO_CHALLENGE', message: err.message } };
+      if (err instanceof BlockedPortalError) return { status: 'needs-human', schemaVersion: '0.1.0', detectedAt, lastError: { code: 'TRABAJANDO_BLOCKED', message: err.message } };
       return { status: 'broken', schemaVersion: '0.1.0', detectedAt, lastError: { code: 'TRABAJANDO_FETCH', message: sanitizeText(err instanceof Error ? err.message : String(err)) } };
     } finally {
       if (resolved?.owned && resolved.dispose) {

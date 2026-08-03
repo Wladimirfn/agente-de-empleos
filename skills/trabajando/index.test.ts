@@ -20,6 +20,9 @@ import {
   ensureApprovedOrigin,
   sanitizeJobPayload,
   trabajandoSkill,
+  classifyPortalResponse,
+  ChallengeBlockedError,
+  BlockedPortalError,
   MAX_OFFERS_PER_SCAN,
   type ListingCard,
   type ListingsFetch,
@@ -287,7 +290,7 @@ describe('trabajandoSkill.scan', () => {
 describe('sanitizeJobPayload', () => {
   it('strips URLs, file paths, JWTs, credentials, and key= substrings', () => {
     const evil = {
-      externalId: '1', title: 'Operario en https://attacker.example/x?token=sk-live-abcdef123456',
+      externalId: '1', title: 'Operario en https://attacker.example/x?token=sk-live-abcdef123456 cf-ray:abc-123',
       company: 'Bearer eyJhbGciOi.token', description: 'C:\\Users\\agent\\cv.pdf /tmp/leak?key=hack',
       url: 'file:///etc/passwd',
     };
@@ -299,7 +302,89 @@ describe('sanitizeJobPayload', () => {
     expect(serialized).not.toMatch(/Bearer\s+[A-Za-z0-9]/);
     expect(serialized).not.toMatch(/sk-live-/);
     expect(serialized).not.toMatch(/[?&](key|api[_-]?key|token)=/);
+    expect(serialized).not.toMatch(/cf-ray[:=]\s*[a-z0-9-]+/i);
     expect(sanitized.title).toContain('Operario');
+  });
+});
+
+describe('classifyPortalResponse', () => {
+  it.each([
+    [200, '<html>jobs here</html>', 'jobs'],
+    [200, '<title>Just a moment...</title>cf-mitigated', 'challenge'],
+    [200, 'Checking your browser before accessing trabajando', 'challenge'],
+    [200, 'Access Denied for this environment', 'blocked'],
+    [200, 'http 403 forbidden', 'blocked'],
+    [302, '', 'redirect'],
+    [302, '', 'jobs'],
+    [500, '', 'error'],
+    [403, '', 'error'],
+  ])('classifies status=%s as %s', (status, body, expected) => {
+    const finalUrl = status === 302 && expected === 'jobs' ? 'https://www.trabajando.cl/sitemap.xml' : status === 302 ? 'https://malware.example/' : undefined;
+    expect(classifyPortalResponse(status, body, finalUrl)).toBe(expected);
+  });
+});
+
+describe('Cloudflare and blocked detection', () => {
+  const CHALLENGE = '<html><head><title>Just a moment...</title></head><body>cf-mitigated challenge-running</body></html>';
+  const BLOCKED = '<html><body><h1>Access Denied</h1><p>http 403 forbidden</p></body></html>';
+
+  it('stops the scan on a challenge response with sanitized code and zero fetches beyond warm-up', async () => {
+    let calls = 0;
+    vi.mocked(playwrightRequest.newContext).mockResolvedValue({
+      get: vi.fn(async (url: string) => {
+        calls++;
+        return { ok: () => true, status: () => 200, text: async () => CHALLENGE, url: () => url };
+      }),
+      dispose: vi.fn(),
+    } as never);
+    const { events, emit } = eventCapture();
+    const result = await trabajandoSkill.scan(profile, { events: { emit } });
+    expect(result).toEqual({ jobsFound: 0, jobsNew: 0, jobsDuplicate: 0, errors: 1 });
+    expect(calls).toBe(1);
+    const errorEvent = events.find((event) => event.kind === 'scan_error');
+    expect((errorEvent?.payload as { code: string }).code).toBe('TRABAJANDO_CHALLENGE');
+    expect(errorEvent?.message).not.toMatch(/cf-mitigated|cf-ray/i);
+    expect(events.filter((event) => event.kind === 'job_found')).toHaveLength(0);
+  });
+
+  it('stops the scan on a blocked response with the corresponding code', async () => {
+    vi.mocked(playwrightRequest.newContext).mockResolvedValue({
+      get: vi.fn(async (url: string) => ({ ok: () => true, status: () => 200, text: async () => BLOCKED, url: () => url })),
+      dispose: vi.fn(),
+    } as never);
+    const { events, emit } = eventCapture();
+    const result = await trabajandoSkill.scan(profile, { events: { emit } });
+    expect(result.errors).toBe(1);
+    expect((events.find((event) => event.kind === 'scan_error')?.payload as { code: string }).code).toBe('TRABAJANDO_BLOCKED');
+    expect(events.find((event) => event.kind === 'job_found')).toBeUndefined();
+  });
+
+  it('preserves the existing jobs behavior for normal sitemaps and 4xx/5xx remain broken', async () => {
+    useFetcher([{ status: 200, body: OFFERS_SITEMAP }, { body: JSONLD }, { body: JSONLD }, { body: JSONLD }]);
+    const { events, emit } = eventCapture();
+    const result = await trabajandoSkill.scan({ id: 1, skills: [{ name: 'mantención' }, { name: 'operario' }] }, { events: { emit } });
+    expect(result.jobsFound).toBe(2);
+    expect(events.some((event) => event.kind === 'job_found')).toBe(true);
+  });
+
+  it('selfCheck reports needs-human for a challenge response without leaking CF markers', async () => {
+    useFetcher([{ status: 200, body: CHALLENGE }]);
+    const health = await trabajandoSkill.selfCheck();
+    expect(health.status).toBe('needs-human');
+    expect(health.lastError?.code).toBe('TRABAJANDO_CHALLENGE');
+    expect(JSON.stringify(health)).not.toMatch(/cf-mitigated|cf-ray/i);
+  });
+
+  it('selfCheck reports needs-human for a blocked response without leaking CF markers', async () => {
+    useFetcher([{ status: 200, body: BLOCKED }]);
+    const health = await trabajandoSkill.selfCheck();
+    expect(health.status).toBe('needs-human');
+    expect(health.lastError?.code).toBe('TRABAJANDO_BLOCKED');
+  });
+
+  it('exports typed errors with stable codes', () => {
+    expect(new ChallengeBlockedError().kind).toBe('TRABAJANDO_CHALLENGE');
+    expect(new BlockedPortalError().kind).toBe('TRABAJANDO_BLOCKED');
   });
 });
 
