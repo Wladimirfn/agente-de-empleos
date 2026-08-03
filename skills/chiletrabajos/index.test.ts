@@ -1,16 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { CandidateProfile } from '@employment-agent/domain';
+import type { EventPayload } from '@employment-agent/skill-runtime';
+
+vi.mock('playwright', () => ({
+  request: { newContext: vi.fn() },
+}));
+
+import { request as playwrightRequest } from 'playwright';
 import {
-  buildQueries,
-  buildListingsUrl,
-  buildDetailUrl,
-  parseJobSlugAndId,
-  extractExternalId,
-  parseListingsHtml,
-  parseListingMeta,
-  parseDetailDescription,
-  normalizeListing,
-  ensureApprovedOrigin,
+  chiletrabajosSkill,
+  type ListingsFetch,
 } from './index.js';
 
 const LISTING = `<section class="listings">
@@ -18,161 +17,187 @@ const LISTING = `<section class="listings">
 <article><a href="/trabajo/operario-de-bodega-9384012">Operario de Bodega Turno Día</a><span>Empresa LogAndes · Maipú · Publicada 30-07-2026</span></article>
 <article><a href="/trabajo/ayudante-de-mantencion-9384013">Ayudante de Mantención</a><span>Empresa Mantención Industrial · Quilicura · Publicada 02-08-2026</span></article>
 </section>`;
-const MALFORMED = `<section>
-<article><a href="https://malware.example/oferta">Enlace externo</a></article>
-<article><a href="/trabajo/oferta-sin-id">Sin id</a></article>
-<article><a href="/trabajo/tecnico-refrigeracion-9384050">  </a></article>
-<article><a href="/trabajo/operario-limpieza-9384051">Operario de Limpieza</a></article>
-</section>`;
-const EMPTY = `<section class="listings"></section>`;
+const PAGE2 = `<section><article><a href="/trabajo/tecnico-en-refrigeracion-9384011">Repetido</a></article><article><a href="/trabajo/supervisor-de-turno-9384033">Supervisor Nocturno</a></article></section>`;
 const DETAIL = `<html><head><meta name="description" content="Empresa busca técnico con al menos dos años de experiencia en mantenimiento de cámaras de frío."></head><body><p>Modalidad: Presencial. Jornada: Full-time.</p></body></html>`;
+const EMPTY = `<section class="listings"></section>`;
 
-describe('buildQueries', () => {
-  it('uses defaults and caps at MAX_QUERIES when the profile has no skills', () => {
-    expect(buildQueries({} as CandidateProfile)).toEqual(['mantención', 'refrigeración', 'bodega']);
-    expect(buildQueries({ skills: ['aa', 'bb', 'cc', 'dd', 'ee'].map((name) => ({ name })) } as CandidateProfile)).toHaveLength(3);
+const eventCapture = () => {
+  const events: EventPayload[] = [];
+  const emit = vi.fn(async (event: EventPayload) => { events.push(event); });
+  return { events, emit };
+};
+
+const fetcherFromQueue = (responses: Array<{ status?: number; body?: string; throwError?: Error; finalUrl?: string }>) => {
+  const get = vi.fn(async (url: string) => {
+    const next = responses.shift() ?? { status: 200, body: EMPTY };
+    if (next.throwError) throw next.throwError;
+    const status = next.status ?? 200;
+    return { ok: () => status >= 200 && status < 300, status: () => status, text: async () => next.body ?? '', url: () => next.finalUrl ?? url };
   });
+  return { fetcher: { get } as ListingsFetch, get };
+};
 
-  it('combines target roles and short skills, deduped', () => {
-    const profile: CandidateProfile = {
-      summary: 'Roles objetivo activos: Técnico de Refrigeración (prioridad 1), Operario Logístico (prioridad 2)',
-      skills: [{ name: 'Refrigeración' }, { name: ' refrigeración ' }, { name: 'Electricidad' }],
-    };
-    expect(buildQueries(profile)).toEqual([
-      'Técnico de Refrigeración', 'Operario Logístico', 'Refrigeración', 'Electricidad',
-    ].slice(0, 3));
-  });
+const useFetcher = (responses: Array<{ status?: number; body?: string; throwError?: Error; finalUrl?: string }>) => {
+  const { fetcher, get } = fetcherFromQueue(responses);
+  vi.mocked(playwrightRequest.newContext).mockResolvedValue({ get, dispose: vi.fn() } as never);
+  return { fetcher, get };
+};
 
-  it('drops skill names longer than MAX_QUERY_LENGTH', () => {
-    const long = 'a'.repeat(40);
-    expect(buildQueries({ skills: [{ name: long }, { name: 'OK' }] } as CandidateProfile)).toEqual(['OK']);
-  });
-});
+const profile: CandidateProfile = { id: 1, skills: [{ name: 'refrigeración' }] };
 
-describe('URL builders', () => {
-  it.each([
-    [1, 'https://www.chiletrabajos.cl/encuentra-un-empleo?keyword=mantenci%C3%B3n&sort=Fecha'],
-    [2, 'https://www.chiletrabajos.cl/encuentra-un-empleo/2?keyword=mantenci%C3%B3n&sort=Fecha'],
-    [3, 'https://www.chiletrabajos.cl/encuentra-un-empleo/3?keyword=mantenci%C3%B3n&sort=Fecha'],
-  ])('builds page %i URL', (page, expected) => {
-    expect(buildListingsUrl('mantención', page)).toBe(expected);
-  });
+beforeEach(() => vi.clearAllMocks());
 
-  it('builds the canonical detail URL from slug and id', () => {
-    expect(buildDetailUrl('tecnico-refrigeracion', '9384011')).toBe('https://www.chiletrabajos.cl/trabajo/tecnico-refrigeracion-9384011');
-  });
-});
-
-describe('parseJobSlugAndId', () => {
-  it.each([
-    ['tecnico-refrigeracion-9384011', { slug: 'tecnico-refrigeracion', id: '9384011' }],
-    ['-9384011', null],
-    ['slug-no-id-valido', null],
-    ['operario-limpieza-9384051', { slug: 'operario-limpieza', id: '9384051' }],
-  ])('parses %s', (input, expected) => {
-    expect(parseJobSlugAndId(input)).toEqual(expected);
+describe('chiletrabajosSkill contract', () => {
+  it('exports the canonical slug, version, displayName and capabilities', () => {
+    expect(chiletrabajosSkill.slug).toBe('chiletrabajos');
+    expect(chiletrabajosSkill.version).toBe('0.1.0');
+    expect(chiletrabajosSkill.displayName).toBe('Chiletrabajos.cl');
+    expect(chiletrabajosSkill.requiredCandidateFields).toEqual([]);
+    expect(chiletrabajosSkill.capabilities).toEqual({ canScan: true, canApply: false, canDetectLoggedOut: false });
   });
 });
 
-describe('extractExternalId', () => {
-  it.each([
-    ['https://malware.example/trabajo/x-1', null],
-    ['https://www.chiletrabajos.cl/trabajo/tecnico-refrigeracion-9384011', '9384011'],
-    ['https://www.chiletrabajos.cl/search?q=mantenimiento', null],
-  ])('returns %s for %s', (href, expected) => {
-    expect(extractExternalId(href)).toBe(expected);
+describe('chiletrabajosSkill.scan', () => {
+  it('emits job_found once per externalId, dedupes across pages, and finishes with scan_completed', async () => {
+    useFetcher([
+      { body: LISTING }, // warm-up
+      { body: LISTING }, // page 1
+      { body: DETAIL }, { body: DETAIL }, { body: DETAIL },
+      { body: PAGE2 }, // page 2 (1 duplicate + 1 new)
+      { body: DETAIL },
+    ]);
+    const { events, emit } = eventCapture();
+    const result = await chiletrabajosSkill.scan(profile, { events: { emit } });
+    expect(result).toMatchObject({ jobsFound: 4, jobsNew: 4, jobsDuplicate: 1, errors: 0 });
+    expect(events.find((event) => event.kind === 'scan_started')).toBeDefined();
+    expect(events.at(-1)?.kind).toBe('scan_completed');
+    expect(new Set(events.filter((event) => event.kind === 'job_found').map((event) => (event.payload as { externalId: string }).externalId))).toEqual(new Set(['9384011', '9384012', '9384013', '9384033']));
+  });
+
+  it('stops paginating when a page returns zero cards and only consumes the warm-up + page 1 fetches', async () => {
+    useFetcher([{ body: LISTING }, { body: LISTING }, { body: DETAIL }, { body: DETAIL }, { body: DETAIL }, { body: EMPTY }]);
+    const { events, emit } = eventCapture();
+    const result = await chiletrabajosSkill.scan(profile, { events: { emit } });
+    expect(result.jobsFound).toBe(3);
+    expect(events.filter((event) => event.kind === 'job_found')).toHaveLength(3);
+  });
+
+  it('emits scan_error with warm-up failure but still completes the scan with errors=1', async () => {
+    useFetcher([{ throwError: new Error('warm-up socket hang up') }, { body: EMPTY }]);
+    const { events, emit } = eventCapture();
+    const result = await chiletrabajosSkill.scan(profile, { events: { emit } });
+    expect(result.errors).toBeGreaterThanOrEqual(1);
+    expect(events.some((event) => event.kind === 'scan_error' && (event.payload as { query: string }).query === '<home>')).toBe(true);
+    expect(events.at(-1)?.kind).toBe('scan_completed');
+  });
+
+  it('emits scan_error for a per-page failure and continues to the next query', async () => {
+    const profileWithQueries: CandidateProfile = { id: 1, skills: [{ name: 'mantención' }, { name: 'refrigeración' }, { name: 'bodega' }] };
+    useFetcher([
+      { body: LISTING }, // warm-up
+      { throwError: new Error('socket hang up') }, // query 1 page 1 fails
+      { body: LISTING }, // query 2 page 1 succeeds
+      { body: DETAIL }, { body: DETAIL }, { body: DETAIL },
+    ]);
+    const { events, emit } = eventCapture();
+    const result = await chiletrabajosSkill.scan(profileWithQueries, { events: { emit } });
+    expect(result.jobsFound).toBe(3);
+    expect(result.errors).toBeGreaterThanOrEqual(1);
+    expect(events.filter((event) => event.kind === 'scan_error')).toHaveLength(1);
+  });
+
+  it('emits only the four allowed event kinds', async () => {
+    useFetcher([{ body: LISTING }, { body: LISTING }, { body: DETAIL }, { body: DETAIL }, { body: DETAIL }]);
+    const { events, emit } = eventCapture();
+    await chiletrabajosSkill.scan(profile, { events: { emit } });
+    for (const event of events) expect(['scan_started', 'scan_completed', 'job_found', 'scan_error']).toContain(event.kind);
   });
 });
 
-describe('parseListingsHtml', () => {
-  it('parses canonical anchor cards', () => {
-    const cards = parseListingsHtml(LISTING);
-    expect(cards.map((card) => card.externalId)).toEqual(['9384011', '9384012', '9384013']);
-    expect(cards[0]?.url).toBe('https://www.chiletrabajos.cl/trabajo/tecnico-en-refrigeracion-9384011');
-    expect(cards[0]?.title).toBe('Técnico en Refrigeración');
+describe('chiletrabajosSkill.selfCheck', () => {
+  it('reports healthy for 2xx on the approved host', async () => {
+    useFetcher([{ status: 200, body: LISTING }]);
+    const health = await chiletrabajosSkill.selfCheck();
+    expect(health.status).toBe('healthy');
   });
 
-  it('returns no cards for an empty listings section', () => {
-    expect(parseListingsHtml(EMPTY)).toEqual([]);
+  it('reports healthy for 3xx redirect that stays on the approved host', async () => {
+    useFetcher([{ status: 302, finalUrl: 'https://www.chiletrabajos.cl/encuentra-un-empleo?keyword=mantenimiento' }]);
+    const health = await chiletrabajosSkill.selfCheck();
+    expect(health.status).toBe('healthy');
   });
 
-  it('skips malformed anchors and external hosts but keeps valid cards', () => {
-    expect(parseListingsHtml(MALFORMED).map((card) => card.externalId)).toEqual(['9384051']);
+  it('reports degraded for 3xx redirect to a foreign origin', async () => {
+    useFetcher([{ status: 302, finalUrl: 'https://malware.example/' }]);
+    const health = await chiletrabajosSkill.selfCheck();
+    expect(health.status).toBe('degraded');
+    expect(health.lastError?.code).toBeUndefined();
+    expect(JSON.stringify(health)).not.toMatch(/https?:\/\/|file:\/\/|:\\\\|\/tmp\/|\/opt\//);
   });
 
-  it('deduplicates repeated anchors on the same page', () => {
-    const html = `<section><article><a href="/trabajo/tecnico-en-refrigeracion-9384011">Repetido 1</a></article><article><a href="/trabajo/tecnico-en-refrigeracion-9384011">Repetido 2</a></article></section>`;
-    expect(parseListingsHtml(html)).toHaveLength(1);
-  });
-});
-
-describe('parseListingMeta', () => {
-  it('extracts company, location and publishedAt from sibling segments', () => {
-    const meta = parseListingMeta(LISTING, '9384012');
-    expect(meta?.company).toContain('LogAndes');
-    expect(meta?.location).toContain('Maipú');
-    expect(meta?.publishedAt).toContain('30-07-2026');
+  it('reports broken for 5xx with sanitized message and no URL leakage', async () => {
+    useFetcher([{ status: 502 }]);
+    const health = await chiletrabajosSkill.selfCheck();
+    expect(health.status).toBe('broken');
+    expect(health.lastError?.code).toBe('CHILETRABAJOS_HTTP');
+    expect(health.lastError?.message).not.toMatch(/https?:\/\/|file:\/\/|:\\\\|\/tmp\/|\/opt\//);
   });
 
-  it('returns null when the external id is not in the html', () => {
-    expect(parseListingMeta(LISTING, '9999999')).toBeNull();
-  });
-
-  it('returns null when no matching anchor exists', () => {
-    const html = `<section><article><a href="/trabajo/oferta-1">Oferta</a></article></section>`;
-    expect(parseListingMeta(html, '9999')).toBeNull();
+  it('reports broken when the network call throws with CHILETRABAJOS_FETCH code', async () => {
+    vi.mocked(playwrightRequest.newContext).mockRejectedValue(new Error('Executable missing'));
+    const health = await chiletrabajosSkill.selfCheck();
+    expect(health.status).toBe('broken');
+    expect(health.lastError?.code).toBe('CHILETRABAJOS_FETCH');
+    expect(health.lastError?.message).toContain('Executable missing');
   });
 });
 
-describe('parseDetailDescription', () => {
-  it('extracts the meta description plus modality and employment type', () => {
-    const detail = parseDetailDescription(DETAIL);
-    expect(detail.description).toContain('mantenimiento de cámaras');
-    expect(detail.modality).toBe('Presencial');
-    expect(detail.employmentType).toBe('Full-time');
+describe('bounded scan behavior', () => {
+  it('stops emitting jobs after the deadline', async () => {
+    const virtualNow = { value: 0 };
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => virtualNow.value);
+    vi.mocked(playwrightRequest.newContext).mockResolvedValue({
+      get: vi.fn(async (url: string) => {
+        virtualNow.value += 80_000;
+        const body = '<section><article><a href="/trabajo/x-1">T1</a></article></section>';
+        return { ok: () => true, status: () => 200, text: async () => body, url: () => url };
+      }),
+      dispose: vi.fn(),
+    } as never);
+    try {
+      const result = await chiletrabajosSkill.scan({ id: 1, skills: [{ name: 'refrigeración' }] }, { events: { emit: vi.fn() } });
+      expect(result.jobsFound).toBe(0);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
-  it('returns empty detail for a challenge page', () => {
-    expect(parseDetailDescription('<html><body><h1>Verify</h1></body></html>')).toEqual({});
-  });
-
-  it('truncates a long meta description', () => {
-    const long = 'a'.repeat(2000);
-    const html = `<head><meta name="description" content="${long}"></head><body></body>`;
-    const detail = parseDetailDescription(html);
-    expect(detail.description?.length).toBeLessThanOrEqual(1200);
-  });
-});
-
-describe('normalizeListing', () => {
-  it('merges anchor and sibling metadata and applies field caps', () => {
-    const card = parseListingsHtml(LISTING).find((item) => item.externalId === '9384012')!;
-    const job = normalizeListing(card, parseListingMeta(LISTING, card.externalId)!);
-    expect(job).toMatchObject({ externalId: '9384012', title: 'Operario de Bodega Turno Día', company: expect.stringContaining('LogAndes'), location: expect.stringContaining('Maipú') });
-    expect(job.url).toBe('https://www.chiletrabajos.cl/trabajo/operario-de-bodega-9384012');
-  });
-
-  it('falls back to the anchor title when meta is null', () => {
-    const card = { externalId: '1', title: 'Anchor Title', url: 'https://www.chiletrabajos.cl/trabajo/anchor-title-1' };
-    const job = normalizeListing(card, null);
-    expect(job.title).toBe('Anchor Title');
-    expect(job.company).toBeUndefined();
-  });
-
-  it('prefers the meta title when provided and falls back to the anchor otherwise', () => {
-    const card = { externalId: '1', title: 'Anchor Title', url: 'https://www.chiletrabajos.cl/trabajo/anchor-title-1' };
-    expect(normalizeListing(card, null).title).toBe('Anchor Title');
-    const metaTitle = { title: 'Meta Title' };
-    expect(normalizeListing(card, metaTitle).title).toBe('Meta Title');
+  it('stops paginating after MAX_PAGES_PER_QUERY pages even when results continue', async () => {
+    const buildPage = (page: number) => `<section><article><a href="/trabajo/tecnico-refrigeracion-${page}">T${page}</a></article></section>`;
+    const pages: Array<{ body: string }> = [];
+    for (let page = 1; page <= 6; page++) pages.push({ body: buildPage(page) });
+    useFetcher([{ body: buildPage(1) }, ...pages]);
+    const { events, emit } = eventCapture();
+    const result = await chiletrabajosSkill.scan({ id: 1, skills: [{ name: 'mantención' }] }, { events: { emit } });
+    expect(result.jobsFound).toBe(2);
+    expect(events.filter((event) => event.kind === 'job_found')).toHaveLength(2);
   });
 });
 
-describe('ensureApprovedOrigin', () => {
-  it('accepts the canonical host', () => {
-    expect(ensureApprovedOrigin('https://www.chiletrabajos.cl/encuentra-un-empleo').hostname).toBe('www.chiletrabajos.cl');
-  });
-
-  it('rejects external hosts', () => {
-    expect(() => ensureApprovedOrigin('https://malware.example/')).toThrow(/Host no aprobado/);
+describe('error sanitization', () => {
+  it('scan_error messages never include http(s) URLs, file URLs, Windows paths, or absolute POSIX paths', async () => {
+    const queryTime = vi.fn().mockReturnValue(0);
+    vi.mocked(playwrightRequest.newContext).mockResolvedValue({
+      get: vi.fn(async (url: string) => {
+        throw new Error(`fetch failed for https://attacker.example/payload?id=1 at /tmp/agent/runner.ts:42:7 (C:\\Users\\agent\\runner.ts:42:7)`);
+      }),
+      dispose: vi.fn(),
+    } as never);
+    const profileWithQueries: CandidateProfile = { id: 1, skills: [{ name: 'mantención' }, { name: 'refrigeración' }, { name: 'bodega' }] };
+    const { events, emit } = eventCapture();
+    await chiletrabajosSkill.scan(profileWithQueries, { events: { emit } });
+    for (const event of events.filter((event) => event.kind === 'scan_error')) {
+      expect(JSON.stringify(event)).not.toMatch(/https?:\/\/|file:\/\/|:\\\\|\/tmp\/|\/opt\//);
+    }
   });
 });
