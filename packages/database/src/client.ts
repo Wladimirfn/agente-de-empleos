@@ -7,10 +7,33 @@ import * as schema from "./schema/index.js";
 
 const DB_PATH = process.env.DATABASE_PATH ?? "data/employment-agent.db";
 
-function resolveDbPath(): string {
-	return path.isAbsolute(DB_PATH)
-		? DB_PATH
-		: path.resolve(process.cwd(), DB_PATH);
+function findWorkspaceRoot(cwd: string): string | null {
+	let current = path.resolve(cwd);
+
+	while (true) {
+		try {
+			const manifest = JSON.parse(
+				fs.readFileSync(path.join(current, "package.json"), "utf8"),
+			) as { name?: unknown; workspaces?: unknown };
+			if (manifest.name === "employment-agent" || manifest.workspaces !== undefined) {
+				return current;
+			}
+		} catch {
+			// Keep walking when a package manifest is absent or invalid.
+		}
+
+		const parent = path.dirname(current);
+		if (parent === current) return null;
+		current = parent;
+	}
+}
+
+export function resolveDbPath(
+	dbPath = DB_PATH,
+	cwd = process.cwd(),
+): string {
+	if (path.isAbsolute(dbPath)) return dbPath;
+	return path.resolve(findWorkspaceRoot(cwd) ?? cwd, dbPath);
 }
 
 function ensureDir(filePath: string): void {

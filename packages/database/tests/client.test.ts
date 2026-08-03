@@ -2,6 +2,9 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
 describe('database client', () => {
   let tmpDir: string;
@@ -36,6 +39,33 @@ describe('database client', () => {
 
     expect(mod.resolveMigrationsFolder(workspaceCwd)).toBe(
       path.join(process.cwd(), 'drizzle', 'migrations'),
+    );
+  });
+
+  it('leaves an absolute database path unchanged', async () => {
+    const { resolveDbPath } = await import('../src/client.js');
+    const absolutePath = path.join(tmpDir, 'absolute.db');
+
+    expect(resolveDbPath(absolutePath, path.join(repoRoot, 'apps', 'web'))).toBe(absolutePath);
+  });
+
+  it.each([
+    ['repository root', repoRoot],
+    ['web workspace', path.join(repoRoot, 'apps', 'web')],
+    ['worker workspace', path.join(repoRoot, 'worker')],
+  ])('resolves a relative database path from the %s', async (_label, cwd) => {
+    const { resolveDbPath } = await import('../src/client.js');
+
+    expect(resolveDbPath('data/employment-agent.db', cwd)).toBe(
+      path.join(repoRoot, 'data', 'employment-agent.db'),
+    );
+  });
+
+  it('falls back to cwd when no project root exists', async () => {
+    const { resolveDbPath } = await import('../src/client.js');
+
+    expect(resolveDbPath('data/fallback.db', tmpDir)).toBe(
+      path.join(tmpDir, 'data', 'fallback.db'),
     );
   });
 
