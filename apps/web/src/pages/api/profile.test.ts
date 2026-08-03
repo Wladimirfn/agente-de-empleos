@@ -1,25 +1,58 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const profileSelectResult: Array<{ id: number }> = [];
-const deleteSpy = vi.fn(async () => undefined);
+const deleteCalls: Array<{ table: string; whereArgs?: unknown }> = [];
 
-vi.mock('@employment-agent/database', () => ({
-  db: {
-    select: vi.fn((..._args: unknown[]) => ({
-      from: vi.fn(() => ({
-        limit: async () => profileSelectResult,
+vi.mock('@employment-agent/database', () => {
+  // The transaction callback runs with a `tx` object whose API mirrors `db`.
+  // We capture every .delete() call (with or without .where()) in
+  // deleteCalls so tests can assert which tables were cleaned.
+  const tx = {
+    delete: vi.fn((table: unknown) => {
+      const chain = {
+        where: (args?: unknown) => {
+          deleteCalls.push({ table: String(table), whereArgs: args });
+          return Promise.resolve(undefined);
+        },
+      };
+      // Eagerly record the call even if .where() is never chained, so
+      // tests can see bare .delete(jobs) / .delete(platforms) too.
+      deleteCalls.push({ table: String(table) });
+      return chain;
+    }),
+  };
+  return {
+    db: {
+      select: vi.fn((..._args: unknown[]) => ({
+        from: vi.fn(() => ({
+          limit: async () => profileSelectResult,
+        })),
       })),
-    })),
-    delete: vi.fn(() => ({
-      where: deleteSpy,
-    })),
-  },
-}));
+      transaction: vi.fn(async (callback: (txArg: typeof tx) => Promise<unknown>) => {
+        await callback(tx);
+      }),
+      // db.delete is unused now (we only delete inside the transaction)
+      delete: vi.fn(),
+    },
+  };
+});
 
 vi.mock('@employment-agent/database/schema', () => ({
   candidateProfiles: 'profiles',
   candidateExperiences: 'experiences',
   candidateSkills: 'skills',
+  candidateDocuments: 'documents',
+  candidateTargetRoles: 'target_roles',
+  profileProposals: 'proposals',
+  chatMessages: 'chat_messages',
+  chatMemoryFacts: 'chat_memory_facts',
+  chatSummaries: 'chat_summaries',
+  matchFeedback: 'match_feedback',
+  jobMatches: 'job_matches',
+  applications: 'applications',
+  jobs: 'jobs',
+  platforms: 'platforms',
+  agentRuns: 'agent_runs',
 }));
 
 const { DELETE, GET } = await import('./profile.js');
@@ -38,11 +71,10 @@ describe('DELETE /api/profile', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     profileSelectResult.length = 0;
-    deleteSpy.mockResolvedValue(undefined);
+    deleteCalls.length = 0;
   });
 
   it('returns 404 when there is no profile to delete', async () => {
-    // profileSelectResult is already empty after beforeEach; no setup needed.
     const response = await callDelete();
 
     expect(response.status).toBe(404);
@@ -51,26 +83,68 @@ describe('DELETE /api/profile', () => {
     expect(payload.code).toBe('NOT_FOUND');
   });
 
-  it('does not call db.delete when there is no profile', async () => {
+  it('does not run the transaction when there is no profile', async () => {
+    const { db } = await import('@employment-agent/database');
     await callDelete();
-    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(deleteCalls).toHaveLength(0);
   });
 
-  it('returns 200 and deletes the profile when one exists', async () => {
+  it('returns 200 when a profile exists and clears every related table', async () => {
     profileSelectResult.push({ id: 7 });
     const response = await callDelete();
 
     expect(response.status).toBe(200);
     const payload = await response.json() as { ok: boolean };
     expect(payload.ok).toBe(true);
-    expect(deleteSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('GET still works after a successful reset (returns empty state)', async () => {
+  it('clears profile-scoped child tables (cascade drift-safe)', async () => {
+    profileSelectResult.push({ id: 7 });
+    await callDelete();
+    const clearedTables = deleteCalls.map((c) => c.table);
+    expect(clearedTables).toContain('chat_summaries');
+    expect(clearedTables).toContain('chat_memory_facts');
+    expect(clearedTables).toContain('chat_messages');
+    expect(clearedTables).toContain('proposals');
+    expect(clearedTables).toContain('target_roles');
+    expect(clearedTables).toContain('documents');
+    expect(clearedTables).toContain('skills');
+    expect(clearedTables).toContain('experiences');
+    expect(clearedTables).toContain('profiles');
+  });
+
+  it('clears match-related tables that have FK drift in the underlying migration', async () => {
+    profileSelectResult.push({ id: 7 });
+    await callDelete();
+    const clearedTables = deleteCalls.map((c) => c.table);
+    expect(clearedTables).toContain('match_feedback');
+    expect(clearedTables).toContain('job_matches');
+    expect(clearedTables).toContain('applications');
+  });
+
+  it('clears global caches (jobs, platforms, agent_runs) so the system really starts at 0', async () => {
+    profileSelectResult.push({ id: 7 });
+    await callDelete();
+    const clearedTables = deleteCalls.map((c) => c.table);
+    expect(clearedTables).toContain('jobs');
+    expect(clearedTables).toContain('platforms');
+    expect(clearedTables).toContain('agent_runs');
+  });
+
+  it('does not touch llm_settings or scan_settings (device-level config preserved)', async () => {
+    profileSelectResult.push({ id: 7 });
+    await callDelete();
+    const clearedTables = deleteCalls.map((c) => c.table);
+    expect(clearedTables).not.toContain('llm_settings');
+    expect(clearedTables).not.toContain('scan_settings');
+  });
+
+  it('GET still works after a successful reset (returns the empty state)', async () => {
     profileSelectResult.push({ id: 7 });
     await callDelete();
 
-    profileSelectResult.length = 0; // post-reset: no profile
+    profileSelectResult.length = 0;
     const response = await callGet();
     expect(response.status).toBe(200);
     const payload = await response.json() as { status: string; profile: unknown };
