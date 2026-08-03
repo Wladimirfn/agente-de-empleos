@@ -1,10 +1,11 @@
+import type { PlatformSkill, ScanResult, SkillHealth, SkillContext } from '@employment-agent/skill-runtime';
 import type { CandidateProfile } from '@employment-agent/domain';
 
 const BASE_URL = 'https://www.trabajando.cl';
 const APPROVED_HOST = 'trabajando.cl';
 const SITEMAP_PATHS = { index: '/sitemap.xml', offers: '/sitemap-ofertas.xml' } as const;
 const DETAIL_PREFIX = '/trabajo/';
-const MAX_OFFERS_PER_SCAN = 60;
+export const MAX_OFFERS_PER_SCAN = 60;
 const MAX_PAGES_PER_QUERY = 2;
 const MAX_QUERIES = 3;
 const MAX_QUERY_LENGTH = 30;
@@ -151,3 +152,156 @@ export function ensureApprovedOrigin(url: string): URL {
   if (!isApprovedHost(parsed.hostname)) throw new Error(`Host no aprobado: ${parsed.hostname}`);
   return parsed;
 }
+
+export interface TrabajandoScanOptions { fetcher?: ListingsFetch; now?: () => number }
+export interface PlaywrightApiResponse { ok(): boolean; status(): number; text(): Promise<string>; url(): string }
+interface PlaywrightRequestContext { get(url: string, options?: unknown): Promise<PlaywrightApiResponse>; dispose(): Promise<void> }
+
+function sanitizeText(value: string): string {
+  return value
+    .replace(/https?:\/\/[^\s<>"']+/gi, '<url>')
+    .replace(/file:\/\/[^\s<>"']+/gi, '<url>')
+    .replace(/(?:[A-Za-z]:\\|\/tmp\/|\/opt\/|\/srv\/|\/home\/|\/var\/|\/etc\/)[^\s<>"']*/gi, '<path>')
+    .replace(/\bbearer\s+[A-Za-z0-9._-]+/gi, 'Bearer <token>')
+    .replace(/\bsk-live-[A-Za-z0-9_-]+/gi, 'sk-live-<redacted>')
+    .replace(/([?&])(key|api[_-]?key|token)=([^&\s]+)/gi, '$1$2=<redacted>')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function sanitizeJobPayload<T extends Record<string, unknown>>(payload: T): T {
+  const scrub = (value: unknown): unknown => {
+    if (typeof value === 'string') return sanitizeText(value);
+    if (Array.isArray(value)) return value.map(scrub);
+    if (value && typeof value === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const [key, item] of Object.entries(value)) out[key] = scrub(item);
+      return out;
+    }
+    return value;
+  };
+  return scrub(payload) as T;
+}
+
+async function resolveClient(opts: TrabajandoScanOptions): Promise<{ client: ListingsFetch; owned: boolean; dispose?: () => Promise<void> }> {
+  if (opts.fetcher) return { client: opts.fetcher, owned: false };
+  const mod = await import('playwright');
+  const context = (await mod.request.newContext({ baseURL: BASE_URL, extraHTTPHeaders: DEFAULT_HEADERS })) as unknown as PlaywrightRequestContext;
+  return {
+    client: {
+      get: async (url: string, options?: { timeout?: number }) => {
+        const response = await context.get(url, options ?? {}) as unknown as PlaywrightApiResponse;
+        return { ok: () => response.ok(), status: () => response.status(), text: async () => response.text(), url: () => response.url() };
+      },
+    },
+    owned: true,
+    dispose: () => context.dispose(),
+  };
+}
+
+async function fetchSitemap(client: ListingsFetch, url: string): Promise<string> {
+  ensureApprovedOrigin(url);
+  const response = await client.get(url, { timeout: REQUEST_TIMEOUT_MS });
+  const status = response.status();
+  if (status >= 200 && status < 300) return response.text();
+  if (status >= 300 && status < 400) throw new Error(`Redirect no resuelto para <url>`);
+  throw new Error(`Trabajando sitemap HTTP ${status} (<url>)`);
+}
+
+async function fetchJobPostingJsonLd(client: ListingsFetch, url: string): Promise<JsonLdJobPosting | null> {
+  ensureApprovedOrigin(url);
+  const response = await client.get(url, { timeout: REQUEST_TIMEOUT_MS });
+  const status = response.status();
+  if (status >= 200 && status < 300) return parseJobPostingJsonLd(await response.text());
+  if (status >= 300 && status < 400) throw new Error(`Redirect no resuelto para <url>`);
+  throw new Error(`Trabajando detail HTTP ${status} (<url>)`);
+}
+
+interface ScanStats { jobsFound: number; jobsDuplicate: number; errors: number }
+
+export const trabajandoSkill: PlatformSkill = {
+  slug: 'trabajando',
+  version: '0.1.0',
+  displayName: 'Trabajando.cl',
+  requiredCandidateFields: [],
+  capabilities: { canScan: true, canApply: false, canDetectLoggedOut: false },
+
+  async scan(profile: CandidateProfile, ctx: SkillContext): Promise<ScanResult> {
+    const queries = buildQueries(profile);
+    await ctx.events.emit({ kind: 'scan_started', message: `Iniciando escaneo de Trabajando.cl (${queries.join(', ')})`, payload: { queries } });
+    const opts: TrabajandoScanOptions = {};
+    const now = opts.now ?? Date.now;
+    const deadline = now() + PER_SCAN_TIME_BUDGET_MS;
+    let resolved: Awaited<ReturnType<typeof resolveClient>> | undefined;
+    try { resolved = await resolveClient(opts); }
+    catch (err) {
+      await ctx.events.emit({ kind: 'scan_error', message: `Error inicializando Trabajando.cl: ${sanitizeText(err instanceof Error ? err.message : String(err))}`, payload: { code: 'TRABAJANDO_FETCH' } });
+      await ctx.events.emit({ kind: 'scan_completed', message: 'Escaneo de Trabajando.cl detenido: no se pudo inicializar el cliente', payload: { jobsFound: 0, errors: 1 } });
+      return { jobsFound: 0, jobsNew: 0, jobsDuplicate: 0, errors: 1 };
+    }
+    const stats: ScanStats = { jobsFound: 0, jobsDuplicate: 0, errors: 0 };
+    const seen = new Set<string>();
+    let sitemapXml = '';
+    try {
+      sitemapXml = await fetchSitemap(resolved.client, buildSitemapUrl('offers'));
+    } catch (err) {
+      stats.errors++;
+      await ctx.events.emit({ kind: 'scan_error', message: `Error consultando Trabajando.cl: ${sanitizeText(err instanceof Error ? err.message : String(err))}`, payload: { code: 'TRABAJANDO_FETCH' } });
+    }
+    const allCards = parseOffersSitemap(sitemapXml);
+    if (allCards.length === 0) {
+      try { if (resolved.owned && resolved.dispose) await resolved.dispose(); } catch { /* swallow */ }
+      await ctx.events.emit({ kind: 'scan_completed', message: 'Escaneo de Trabajando.cl detenido: sitemap sin ofertas', payload: { jobsFound: 0, errors: stats.errors } });
+      return { jobsFound: 0, jobsNew: 0, jobsDuplicate: 0, errors: stats.errors };
+    }
+    const matched = filterOffersByQueries(allCards, queries).slice(0, MAX_OFFERS_PER_SCAN);
+    for (const card of matched) {
+      if (now() >= deadline) break;
+      if (seen.has(card.externalId)) { stats.jobsDuplicate++; continue; }
+      seen.add(card.externalId);
+      let job = normalizeListing(card, null);
+      if (now() < deadline) {
+        try {
+          const jsonLd = await fetchJobPostingJsonLd(resolved.client, card.url);
+          if (jsonLd) job = normalizeListing(card, jsonLd);
+        } catch { /* keep listing-only metadata */ }
+      }
+      stats.jobsFound++;
+      await ctx.events.emit({ kind: 'job_found', message: sanitizeText(`Encontrada: ${job.title}${job.company ? ` en ${job.company}` : ''}`), payload: sanitizeJobPayload(job as unknown as Record<string, unknown>) });
+    }
+    try { if (resolved.owned && resolved.dispose) await resolved.dispose(); } catch { /* swallow */ }
+    await ctx.events.emit({ kind: 'scan_completed', message: `Escaneo de Trabajando.cl completado: ${stats.jobsFound} ofertas encontradas`, payload: { jobsFound: stats.jobsFound, errors: stats.errors } });
+    return { jobsFound: stats.jobsFound, jobsNew: stats.jobsFound, jobsDuplicate: stats.jobsDuplicate, errors: stats.errors };
+  },
+
+  async selfCheck(): Promise<SkillHealth> {
+    const detectedAt = new Date().toISOString();
+    let resolved: Awaited<ReturnType<typeof resolveClient>> | undefined;
+    try { resolved = await resolveClient({}); }
+    catch (err) {
+      return { status: 'broken', schemaVersion: '0.1.0', detectedAt, lastError: { code: 'TRABAJANDO_FETCH', message: sanitizeText(err instanceof Error ? err.message : String(err)) } };
+    }
+    try {
+      const response = await resolved.client.get(buildSitemapUrl('index'), { timeout: REQUEST_TIMEOUT_MS });
+      const status = response.status();
+      const finalUrl = response.url?.() ?? buildSitemapUrl('index');
+      if (status >= 300 && status < 400) {
+        try { ensureApprovedOrigin(finalUrl); return { status: 'healthy', schemaVersion: '0.1.0', detectedAt }; }
+        catch { return { status: 'degraded', schemaVersion: '0.1.0', detectedAt }; }
+      }
+      if (status >= 200 && status < 300) {
+        try { ensureApprovedOrigin(finalUrl); return { status: 'healthy', schemaVersion: '0.1.0', detectedAt }; }
+        catch { return { status: 'broken', schemaVersion: '0.1.0', detectedAt, lastError: { code: 'TRABAJANDO_HTTP', message: 'probe landed on a foreign origin' } }; }
+      }
+      return { status: 'broken', schemaVersion: '0.1.0', detectedAt, lastError: { code: 'TRABAJANDO_HTTP', message: `HTTP ${status}` } };
+    } catch (err) {
+      return { status: 'broken', schemaVersion: '0.1.0', detectedAt, lastError: { code: 'TRABAJANDO_FETCH', message: sanitizeText(err instanceof Error ? err.message : String(err)) } };
+    } finally {
+      if (resolved?.owned && resolved.dispose) {
+        try { await resolved.dispose(); } catch { /* swallow */ }
+      }
+    }
+  },
+};
+
+export default trabajandoSkill;
