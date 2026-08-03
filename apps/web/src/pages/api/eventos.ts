@@ -1,15 +1,16 @@
 import type { APIRoute } from 'astro';
 import { db } from '@employment-agent/database';
 import { applicationEvents } from '@employment-agent/database/schema';
-import { gt } from 'drizzle-orm';
+import { asc, desc, gt } from 'drizzle-orm';
+import { chronologicalSnapshot, encodeSse, HISTORY_LIMIT, readEventCursor } from '../../lib/activity-stream.js';
 
 export const prerender = false;
 
 const POLL_MS = Number(process.env.SSE_POLL_MS ?? 1000);
 const HEARTBEAT_MS = 15_000;
 
-export const GET: APIRoute = async ({ request }) => {
-  let lastSeen = 0;
+export const GET: APIRoute = async ({ request, url }) => {
+  let lastSeen = readEventCursor(request, url) ?? 0;
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
@@ -24,15 +25,26 @@ export const GET: APIRoute = async ({ request }) => {
 
       const heartbeat = setInterval(() => send(':heartbeat\n\n'), HEARTBEAT_MS);
 
+      if (lastSeen === 0) {
+        const rows = await db.select().from(applicationEvents)
+          .orderBy(desc(applicationEvents.id)).limit(HISTORY_LIMIT);
+        const snapshot = chronologicalSnapshot(rows);
+        if (snapshot.length > 0) {
+          lastSeen = snapshot.at(-1)!.id;
+          send(`event: snapshot\nid: ${lastSeen}\ndata: ${JSON.stringify(snapshot)}\n\n`);
+        }
+      }
+
       const poll = setInterval(async () => {
         try {
           const rows = await db
             .select()
             .from(applicationEvents)
             .where(gt(applicationEvents.id, lastSeen))
+            .orderBy(asc(applicationEvents.id))
             .limit(50);
           for (const row of rows) {
-            send(`data: ${JSON.stringify(row)}\n\n`);
+            send(encodeSse(row));
             lastSeen = row.id;
           }
         } catch (err) {

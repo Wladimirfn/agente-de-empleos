@@ -8,11 +8,9 @@ export default function LiveFeed() {
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
-    const disconnect = connectToEventStream();
-    setConnected(true);
+    const disconnect = connectToEventStream(setConnected);
     return () => {
       disconnect();
-      setConnected(false);
     };
   }, []);
 

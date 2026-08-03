@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { db } from '@employment-agent/database';
 import { taskQueue } from '@employment-agent/database/schema';
-import { eq, and, lte, sql } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 
 export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'retrying';
 
@@ -46,11 +46,20 @@ export async function enqueueTask(task: NewTask): Promise<string> {
  */
 export async function claimNextTask(): Promise<TaskRow | null> {
   const now = new Date().toISOString();
-  // SQLite supports RETURNING; use raw SQL for the atomic claim.
   const result = await db
     .update(taskQueue)
     .set({ status: 'running', startedAt: now })
-    .where(and(eq(taskQueue.status, 'pending'), lte(taskQueue.scheduledAt, now)))
+    .where(and(
+      eq(taskQueue.status, 'pending'),
+      eq(taskQueue.id, sql`(
+        SELECT ${taskQueue.id}
+        FROM ${taskQueue}
+        WHERE ${taskQueue.status} = 'pending'
+          AND ${taskQueue.scheduledAt} <= ${now}
+        ORDER BY ${taskQueue.scheduledAt}, ${taskQueue.id}
+        LIMIT 1
+      )`),
+    ))
     .returning();
   return (result[0] as TaskRow | undefined) ?? null;
 }
