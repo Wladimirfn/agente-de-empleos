@@ -2024,12 +2024,10 @@ describe('boot registration — worker/src/skill-init.ts wires the skill', () =>
       expect(skill?.slug).toBe('indeed');
       expect(skill?.displayName).toBe('Indeed.cl');
       expect(skill?.version).toBe(INDEED_SKILL_VERSION);
-      // The boot wiring also registers the other co-resident skills — we
-      // assert at least that those slugs are present so a typo in
-      // `skill-init.ts` (dropped register call) fails this test.
+      // Boot wiring registers real platform skills but excludes fixtures.
       expect(registry.has('laborum')).toBe(true);
       expect(registry.has('computrabajo')).toBe(true);
-      expect(registry.has('example-platform')).toBe(true);
+      expect(registry.has('example-platform')).toBe(false);
 
       // Second call MUST throw — the registry guards against
       // double-registration and the boot wiring has no idempotency layer.

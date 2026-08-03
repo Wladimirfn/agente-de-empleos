@@ -2,10 +2,11 @@ import { registry } from '@employment-agent/skill-runtime';
 import { db } from '@employment-agent/database';
 import { platforms, platformSkills } from '@employment-agent/database/schema';
 import { eq } from 'drizzle-orm';
-import { examplePlatformSkill } from '../../skills/example-platform/index.js';
 import { laborumSkill } from '../../skills/laborum/index.js';
 import { computrabajoSkill } from '../../skills/computrabajo/index.js';
 import { indeedSkill } from '../../skills/indeed/index.js';
+
+export const productionSkills = [laborumSkill, computrabajoSkill, indeedSkill] as const;
 
 async function ensurePlatform(slug: string, displayName: string): Promise<number> {
   const existing = await db.select().from(platforms).where(eq(platforms.slug, slug)).limit(1);
@@ -28,10 +29,7 @@ async function ensurePlatform(slug: string, displayName: string): Promise<number
  * scanned by the LLM browser agent.
  */
 export function initializeSkills(): void {
-  registry.register(examplePlatformSkill);
-  registry.register(laborumSkill);
-  registry.register(computrabajoSkill);
-  registry.register(indeedSkill);
+  for (const skill of productionSkills) registry.register(skill);
   for (const skill of registry.list()) {
     console.log(`[skills] registered ${skill.slug} v${skill.version} — ${skill.displayName}`);
   }
