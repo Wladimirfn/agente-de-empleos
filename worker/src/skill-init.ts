@@ -5,8 +5,9 @@ import { eq } from 'drizzle-orm';
 import { laborumSkill } from '../../skills/laborum/index.js';
 import { computrabajoSkill } from '../../skills/computrabajo/index.js';
 import { indeedSkill } from '../../skills/indeed/index.js';
+import { chiletrabajosSkill } from '../../skills/chiletrabajos/index.js';
 
-export const productionSkills = [laborumSkill, computrabajoSkill, indeedSkill] as const;
+export const productionSkills = [laborumSkill, computrabajoSkill, indeedSkill, chiletrabajosSkill] as const;
 
 async function ensurePlatform(slug: string, displayName: string): Promise<number> {
   const existing = await db.select().from(platforms).where(eq(platforms.slug, slug)).limit(1);

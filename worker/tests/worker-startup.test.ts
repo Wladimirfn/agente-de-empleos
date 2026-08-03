@@ -25,6 +25,12 @@ describe('production skill registration', () => {
 
   it('only exposes real platform skills for production registration', async () => {
     const { productionSkills } = await import('../src/skill-init.js');
-    expect(productionSkills.map((skill) => skill.slug)).toEqual(['laborum', 'computrabajo', 'indeed']);
+    expect(productionSkills.map((skill) => skill.slug)).toEqual(['laborum', 'computrabajo', 'indeed', 'chiletrabajos']);
+    expect(productionSkills.some((skill) => skill.slug === 'example-platform')).toBe(false);
+  });
+
+  it('imports the chiletrabajos skill into the production registry source', () => {
+    expect(skillInitSource).toContain("from '../../skills/chiletrabajos/index.js'");
+    expect(skillInitSource).toMatch(/chiletrabajosSkill/);
   });
 });

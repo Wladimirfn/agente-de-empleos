@@ -200,9 +200,19 @@ async function fetchListings(client: ListingsFetch, url: string): Promise<string
   ensureApprovedOrigin(url);
   const response = await client.get(url, { timeout: REQUEST_TIMEOUT_MS });
   const status = response.status();
-  if (status >= 200 && status < 300) return response.text();
-  if (status >= 300 && status < 400) throw new Error(`Redirect no resuelto para <url>`);
-  throw new Error(`Chiletrabajos search HTTP ${status} (<url>)`);
+  const finalUrl = response.url?.();
+  const text = await response.text();
+  if (status >= 300 && status < 400) {
+    if (isApprovedFinalUrl(finalUrl)) return text;
+    throw new TransportError('Redirect fuera del host aprobado');
+  }
+  if (status >= 200 && status < 300) {
+    const kind = classifyPortalResponse(status, text, finalUrl);
+    if (kind === 'challenge') throw new ChallengeBlockedError();
+    if (kind === 'blocked') throw new BlockedPortalError();
+    return text;
+  }
+  throw new TransportError(`Chiletrabajos search HTTP ${status} (<url>)`);
 }
 
 function sanitizeError(err: unknown): string {
@@ -210,13 +220,58 @@ function sanitizeError(err: unknown): string {
   let cleaned = raw.replace(/\s+(at\s+[\w./:$<>]+\s*\(?[^)]*\)?|\bat\s+[\w./:$<>]+:\d+:\d+\)?)/gi, ' ');
   cleaned = cleaned.replace(/https?:\/\/[^\s<>"']+/gi, '<url>').replace(/file:\/\/[^\s<>"']+/gi, '<url>');
   cleaned = cleaned.replace(/(?:[A-Za-z]:\\|\/tmp\/|\/opt\/|\/srv\/|\/home\/|\/var\/|\/etc\/)[^\s<>"']*/gi, '<path>');
+  cleaned = cleaned.replace(/cf[-_ ]?ray(?:\s*id)?\s*[:=]?\s*[a-z0-9-]+/gi, 'cf-ray');
   cleaned = cleaned.replace(/\s+/g, ' ').trim();
   return cleaned || 'error';
+}
+
+// Cloudflare / blocked vocabulary — duplicated from `skills/indeed/src/classify.ts`
+// intentionally per skill-isolation (the chiletrabajos connector must remain
+// independent of the Indeed skill's runtime surface).
+const CHALLENGE_MARKERS = ['cf-mitigated', 'challenge-running', 'just a moment', 'attention required', 'verify you are human', 'checking your browser'];
+const BLOCKED_MARKERS = ['access denied', 'forbidden', 'service unavailable', 'http 403', 'http 500'];
+const CHALLENGE_BODY = '<html><body><h1>cf-mitigated</h1><p>Just a moment…</p></body></html>';
+
+export type PortalResponseKind = 'jobs' | 'challenge' | 'blocked' | 'redirect' | 'error';
+
+function isApprovedFinalUrl(finalUrl: string | undefined): boolean {
+  if (!finalUrl) return false;
+  try { return new URL(finalUrl).hostname.toLowerCase().endsWith(APPROVED_HOST); } catch { return false; }
+}
+
+export function classifyPortalResponse(status: number, body: string, finalUrl?: string): PortalResponseKind {
+  if (status >= 300 && status < 400) return isApprovedFinalUrl(finalUrl) ? 'jobs' : 'redirect';
+  if (status >= 200 && status < 300) {
+    const lower = body.toLowerCase();
+    if (CHALLENGE_MARKERS.some((marker) => lower.includes(marker))) return 'challenge';
+    if (BLOCKED_MARKERS.some((marker) => lower.includes(marker))) return 'blocked';
+    return 'jobs';
+  }
+  return 'error';
+}
+
+export class ChallengeBlockedError extends Error {
+  readonly kind = 'CHILETRABAJOS_CHALLENGE' as const;
+  readonly code = 'CHILETRABAJOS_CHALLENGE' as const;
+  constructor() { super('Portal requires human verification; cannot scan from this environment'); this.name = 'ChallengeBlockedError'; }
+}
+
+export class BlockedPortalError extends Error {
+  readonly kind = 'CHILETRABAJOS_BLOCKED' as const;
+  readonly code = 'CHILETRABAJOS_BLOCKED' as const;
+  constructor() { super('Portal has blocked this client; cannot scan from this environment'); this.name = 'BlockedPortalError'; }
+}
+
+export class TransportError extends Error {
+  readonly kind = 'CHILETRABAJOS_TRANSPORT' as const;
+  readonly code = 'CHILETRABAJOS_TRANSPORT' as const;
+  constructor(message: string) { super(message); this.name = 'TransportError'; }
 }
 
 async function crawlPage(client: ListingsFetch, query: string, page: number, stats: ScanStats, ctx: SkillContext): Promise<string | null> {
   try { return await fetchListings(client, buildListingsUrl(query, page)); }
   catch (err) {
+    if (err instanceof ChallengeBlockedError || err instanceof BlockedPortalError) throw err;
     stats.errors++;
     await ctx.events.emit({ kind: 'scan_error', message: `Error consultando Chiletrabajos.cl: ${sanitizeError(err)}`, payload: { query, page } });
     return null;
@@ -258,11 +313,17 @@ export const chiletrabajosSkill: PlatformSkill = {
     const resolved = await resolveClient(opts);
     const stats: ScanStats = { jobsFound: 0, jobsDuplicate: 0, errors: 0 };
     const seen = new Set<string>();
+    let blocked: ChallengeBlockedError | BlockedPortalError | null = null;
     try {
       try { await fetchListings(resolved.client, buildListingsUrl(queries[0] ?? '', 1)); }
       catch (err) {
-        stats.errors++;
-        await ctx.events.emit({ kind: 'scan_error', message: `Error en warm-up de Chiletrabajos.cl: ${sanitizeError(err)}`, payload: { query: '<home>', page: 0 } });
+        if (err instanceof ChallengeBlockedError || err instanceof BlockedPortalError) blocked = err;
+        else { stats.errors++; await ctx.events.emit({ kind: 'scan_error', message: `Error en warm-up de Chiletrabajos.cl: ${sanitizeError(err)}`, payload: { query: '<home>', page: 0 } }); }
+      }
+      if (blocked) {
+        await ctx.events.emit({ kind: 'scan_error', message: blocked.message, payload: { code: blocked.code, reason: blocked instanceof ChallengeBlockedError ? 'challenge' : 'blocked' } });
+        await ctx.events.emit({ kind: 'scan_completed', message: `Escaneo de Chiletrabajos.cl detenido: ${blocked.message}`, payload: { jobsFound: 0, errors: 1 } });
+        return { jobsFound: 0, jobsNew: 0, jobsDuplicate: 0, errors: 1 };
       }
       for (const query of queries) {
         for (let page = 1; page <= MAX_PAGES_PER_QUERY; page++) {
@@ -281,10 +342,18 @@ export const chiletrabajosSkill: PlatformSkill = {
           }
         }
       }
+    } catch (err) {
+      if (err instanceof ChallengeBlockedError || err instanceof BlockedPortalError) blocked = err;
+      else throw err;
     } finally {
       if (resolved?.owned && resolved.dispose) {
         try { await resolved.dispose(); } catch { /* swallow dispose errors */ }
       }
+    }
+    if (blocked) {
+      await ctx.events.emit({ kind: 'scan_error', message: blocked.message, payload: { code: blocked.code, reason: blocked instanceof ChallengeBlockedError ? 'challenge' : 'blocked' } });
+      await ctx.events.emit({ kind: 'scan_completed', message: `Escaneo de Chiletrabajos.cl detenido: ${blocked.message}`, payload: { jobsFound: 0, errors: 1 } });
+      return { jobsFound: 0, jobsNew: 0, jobsDuplicate: 0, errors: 1 };
     }
     await ctx.events.emit({ kind: 'scan_completed', message: `Escaneo de Chiletrabajos.cl completado: ${stats.jobsFound} ofertas encontradas`, payload: { jobsFound: stats.jobsFound, errors: stats.errors } });
     return { jobsFound: stats.jobsFound, jobsNew: stats.jobsFound, jobsDuplicate: stats.jobsDuplicate, errors: stats.errors };
@@ -296,22 +365,29 @@ export const chiletrabajosSkill: PlatformSkill = {
     try {
       resolved = await resolveClient({});
     } catch (err) {
-      return { status: 'broken', schemaVersion: '0.1.0', detectedAt, lastError: { code: 'CHILETRABAJOS_FETCH', message: err instanceof Error ? err.message : String(err) } };
+      return { status: 'broken', schemaVersion: '0.1.0', detectedAt, lastError: { code: 'CHILETRABAJOS_FETCH', message: sanitizeError(err) } };
     }
     try {
       const response = await resolved.client.get(`${BASE_URL}${LISTINGS_PATH}`, { timeout: REQUEST_TIMEOUT_MS });
       const status = response.status();
       const finalUrl = response.url?.() ?? `${BASE_URL}${LISTINGS_PATH}`;
-      if (status >= 200 && status < 300) {
-        try { ensureApprovedOrigin(finalUrl); return { status: 'healthy', schemaVersion: '0.1.0', detectedAt }; }
-        catch { return { status: 'degraded', schemaVersion: '0.1.0', detectedAt }; }
-      }
+      const text = await response.text();
       if (status >= 300 && status < 400) {
+        return isApprovedFinalUrl(finalUrl)
+          ? { status: 'healthy', schemaVersion: '0.1.0', detectedAt }
+          : { status: 'degraded', schemaVersion: '0.1.0', detectedAt };
+      }
+      if (status >= 200 && status < 300) {
+        const kind = classifyPortalResponse(status, text, finalUrl);
+        if (kind === 'challenge') return { status: 'needs-human', schemaVersion: '0.1.0', detectedAt, lastError: { code: 'CHILETRABAJOS_CHALLENGE', message: new ChallengeBlockedError().message } };
+        if (kind === 'blocked') return { status: 'needs-human', schemaVersion: '0.1.0', detectedAt, lastError: { code: 'CHILETRABAJOS_BLOCKED', message: new BlockedPortalError().message } };
         try { ensureApprovedOrigin(finalUrl); return { status: 'healthy', schemaVersion: '0.1.0', detectedAt }; }
         catch { return { status: 'degraded', schemaVersion: '0.1.0', detectedAt }; }
       }
       return { status: 'broken', schemaVersion: '0.1.0', detectedAt, lastError: { code: 'CHILETRABAJOS_HTTP', message: `HTTP ${status}` } };
-} catch (err) {
+    } catch (err) {
+      if (err instanceof ChallengeBlockedError) return { status: 'needs-human', schemaVersion: '0.1.0', detectedAt, lastError: { code: 'CHILETRABAJOS_CHALLENGE', message: err.message } };
+      if (err instanceof BlockedPortalError) return { status: 'needs-human', schemaVersion: '0.1.0', detectedAt, lastError: { code: 'CHILETRABAJOS_BLOCKED', message: err.message } };
       return { status: 'broken', schemaVersion: '0.1.0', detectedAt, lastError: { code: 'CHILETRABAJOS_FETCH', message: sanitizeError(err) } };
     } finally {
       if (resolved?.owned && resolved.dispose) {

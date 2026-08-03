@@ -201,3 +201,62 @@ describe('error sanitization', () => {
     }
   });
 });
+
+describe('Cloudflare and blocked detection', () => {
+  const CHALLENGE = '<html><head><title>Just a moment...</title></head><body>cf-mitigated challenge-running</body></html>';
+  const BLOCKED = '<html><body><h1>Access Denied</h1><p>http 403 forbidden</p></body></html>';
+
+  it('stops the scan on a challenge response with sanitized code and zero fetches beyond warm-up', async () => {
+    let calls = 0;
+    vi.mocked(playwrightRequest.newContext).mockResolvedValue({
+      get: vi.fn(async (url: string) => {
+        calls++;
+        return { ok: () => true, status: () => 200, text: async () => CHALLENGE, url: () => url };
+      }),
+      dispose: vi.fn(),
+    } as never);
+    const { events, emit } = eventCapture();
+    const result = await chiletrabajosSkill.scan({ id: 1, skills: [{ name: 'refrigeración' }] }, { events: { emit } });
+    expect(result).toEqual({ jobsFound: 0, jobsNew: 0, jobsDuplicate: 0, errors: 1 });
+    expect(calls).toBe(1);
+    const errorEvent = events.find((event) => event.kind === 'scan_error');
+    expect((errorEvent?.payload as { code: string }).code).toBe('CHILETRABAJOS_CHALLENGE');
+    expect(errorEvent?.message).not.toMatch(/cf-mitigated|cf-ray/i);
+    expect(events.filter((event) => event.kind === 'job_found')).toHaveLength(0);
+  });
+
+  it('stops the scan on a blocked response with the corresponding code', async () => {
+    vi.mocked(playwrightRequest.newContext).mockResolvedValue({
+      get: vi.fn(async (url: string) => ({ ok: () => true, status: () => 200, text: async () => BLOCKED, url: () => url })),
+      dispose: vi.fn(),
+    } as never);
+    const { events, emit } = eventCapture();
+    const result = await chiletrabajosSkill.scan({ id: 1, skills: [{ name: 'refrigeración' }] }, { events: { emit } });
+    expect(result.errors).toBe(1);
+    expect((events.find((event) => event.kind === 'scan_error')?.payload as { code: string }).code).toBe('CHILETRABAJOS_BLOCKED');
+    expect(events.find((event) => event.kind === 'job_found')).toBeUndefined();
+  });
+
+  it('preserves the existing jobs behavior for normal listings and 4xx/5xx remain broken', async () => {
+    useFetcher([{ status: 200, body: LISTING }, { status: 503 }]);
+    const { events, emit } = eventCapture();
+    const result = await chiletrabajosSkill.scan({ id: 1, skills: [{ name: 'mantención' }] }, { events: { emit } });
+    expect(result.errors).toBeGreaterThanOrEqual(1);
+    expect(events.some((event) => event.kind === 'scan_error')).toBe(true);
+  });
+
+  it('selfCheck reports needs-human for a challenge response without leaking CF markers', async () => {
+    useFetcher([{ status: 200, body: CHALLENGE }]);
+    const health = await chiletrabajosSkill.selfCheck();
+    expect(health.status).toBe('needs-human');
+    expect(health.lastError?.code).toBe('CHILETRABAJOS_CHALLENGE');
+    expect(JSON.stringify(health)).not.toMatch(/cf-mitigated|cf-ray/i);
+  });
+
+  it('selfCheck reports needs-human for a blocked response without leaking CF markers', async () => {
+    useFetcher([{ status: 200, body: BLOCKED }]);
+    const health = await chiletrabajosSkill.selfCheck();
+    expect(health.status).toBe('needs-human');
+    expect(health.lastError?.code).toBe('CHILETRABAJOS_BLOCKED');
+  });
+});
