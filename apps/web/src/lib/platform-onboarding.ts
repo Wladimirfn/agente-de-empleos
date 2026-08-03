@@ -148,15 +148,15 @@ export function platformScanTaskType(hasSkill: boolean, forceAgent = false): 'SC
 
 export type PlatformScanTaskType = 'SCAN_PLATFORM' | 'BROWSER_AGENT_SCAN';
 
-export async function enqueuePlatformScan(platform: { slug: string; url?: string }, triggeredBy: string, type: PlatformScanTaskType = 'BROWSER_AGENT_SCAN'): Promise<string | null> {
+export async function enqueuePlatformScan(platform: { slug: string; url?: string }, triggeredBy: string, type: PlatformScanTaskType = 'BROWSER_AGENT_SCAN', context: { deepSearchRunId?: string; executor?: Pick<typeof db, 'all'> } = {}): Promise<string | null> {
   const id = randomUUID();
-  const payload = JSON.stringify({ skillSlug: platform.slug, ...(type === 'BROWSER_AGENT_SCAN' ? { platformUrl: new URL(platform.url!).origin } : {}), triggeredBy });
-  const inserted = await db.all<{ id: string }>(sql`
+  const payload = JSON.stringify({ skillSlug: platform.slug, ...(type === 'BROWSER_AGENT_SCAN' ? { platformUrl: new URL(platform.url!).origin } : {}), triggeredBy, ...(context.deepSearchRunId ? { deepSearchRunId: context.deepSearchRunId } : {}) });
+  const inserted = await (context.executor ?? db).all<{ id: string }>(sql`
     INSERT INTO task_queue (id, type, payload_json, status, attempts, max_attempts, scheduled_at)
     SELECT ${id}, ${type}, ${payload}, 'pending', 0, ${type === 'BROWSER_AGENT_SCAN' ? 1 : 3}, ${new Date().toISOString()}
     WHERE NOT EXISTS (
       SELECT 1 FROM task_queue
-      WHERE type = ${type} AND status IN ('pending', 'running', 'retrying')
+      WHERE (${context.deepSearchRunId ?? null} IS NOT NULL OR type = ${type}) AND status IN ('pending', 'running', 'retrying')
         AND json_extract(payload_json, '$.skillSlug') = ${platform.slug}
     ) RETURNING id
   `);

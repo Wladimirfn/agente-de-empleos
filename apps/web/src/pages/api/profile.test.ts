@@ -53,6 +53,7 @@ vi.mock('@employment-agent/database/schema', () => ({
   jobs: 'jobs',
   platforms: 'platforms',
   agentRuns: 'agent_runs',
+  agentConfirmations: 'agent_confirmations',
 }));
 
 const { DELETE, GET } = await import('./profile.js');
@@ -107,6 +108,7 @@ describe('DELETE /api/profile', () => {
     expect(clearedTables).toContain('chat_memory_facts');
     expect(clearedTables).toContain('chat_messages');
     expect(clearedTables).toContain('proposals');
+    expect(clearedTables).toContain('agent_confirmations');
     expect(clearedTables).toContain('target_roles');
     expect(clearedTables).toContain('documents');
     expect(clearedTables).toContain('skills');

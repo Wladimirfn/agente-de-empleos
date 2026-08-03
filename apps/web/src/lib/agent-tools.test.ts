@@ -76,6 +76,7 @@ describe('parseToolCall', () => {
   it('rejects malformed and undeclared read arguments', () => {
     expect(parseToolCall('HERRAMIENTA: {"tool":"list_activity","args":{"limit":"all"}}').kind).toBe('error');
     expect(parseToolCall('HERRAMIENTA: {"tool":"get_profile_summary","args":{"raw":true}}').kind).toBe('error');
+    expect(parseToolCall('HERRAMIENTA: {"tool":"confirm_deep_search","args":{"approved":true}}').kind).toBe('error');
   });
 });
 
@@ -88,7 +89,7 @@ describe('TOOLS_PROMPT', () => {
 });
 
 describe('bounded read tools', () => {
-  const reads = ['get_profile_summary', 'list_cv_documents', 'list_jobs', 'list_applications', 'list_platforms', 'list_platform_skills', 'list_activity', 'get_errors'] as const;
+  const reads = ['get_profile_summary', 'list_cv_documents', 'list_jobs', 'list_applications', 'list_platforms', 'list_platform_skills', 'list_activity', 'get_errors', 'deep_search_status'] as const;
 
   it.each(reads)('%s dispatches through the bounded recursive redaction envelope', async (tool) => {
     const secret = `<b>Senior Engineer ACME Santiago</b> sk-live-abcdef123456 github_pat_${'x'.repeat(24)} Bearer abc.def eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature {"password":"hunter2","apiKey":"live-key"} https://user:pass@example.com/jobs?token=x#secret C:/Users/jane/cv.pdf \\\\server\\share\\cv.pdf /opt/app/key /srv/data/key failure at async run (/tmp/app.ts:1:2)`;
@@ -111,5 +112,6 @@ describe('bounded read tools', () => {
     const source = readFileSync(new URL('./agent-tools.ts', import.meta.url), 'utf8');
     for (const ordering of ['desc(candidateExperiences.createdAt), desc(candidateExperiences.id)', 'asc(candidateTargetRoles.priority), asc(candidateTargetRoles.id)', 'desc(candidateDocuments.createdAt), desc(candidateDocuments.id)', 'desc(jobMatches.score), desc(jobs.firstSeenAt), desc(jobs.id)', 'desc(applications.createdAt), desc(applications.id)', 'asc(platformSkills.skillSlug), asc(platformSkills.id)', 'desc(skillHealthchecks.checkedAt), desc(skillHealthchecks.id)', 'desc(agentRuns.startedAt), desc(agentRuns.id)', 'desc(skillFailures.occurredAt), desc(skillFailures.id)']) expect(source).toContain(ordering);
     expect(source.match(/from\(candidateProfiles\)\.orderBy\(desc\(candidateProfiles\.id\)\)\.limit\(1\)/g)).toHaveLength(3);
+    for (const handler of ['deep_search_status:', "case 'propose_deep_search':", "case 'confirm_deep_search':"]) expect(source).toContain(handler);
   });
 });

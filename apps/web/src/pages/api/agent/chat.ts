@@ -17,7 +17,7 @@ import { db } from '@employment-agent/database';
 import { candidateProfiles, chatMessages } from '@employment-agent/database/schema';
 import { and, asc, eq } from 'drizzle-orm';
 import { resolveModelContext, estimateTokens, estimateMessagesTokens } from '../../../lib/model-context.js';
-import { executeTool, parseToolCall, MAX_TOOL_ROUNDS, TOOLS_PROMPT } from '../../../lib/agent-tools.js';
+import { executeTool, parseToolCall, MAX_TOOL_ROUNDS, TOOLS_PROMPT, type ToolExecutionContext } from '../../../lib/agent-tools.js';
 import { approvedOriginsFromMessage } from '../../../lib/platform-onboarding.js';
 import type { ChatMessage as LLMChatMessage, LLMProvider } from '@employment-agent/llm';
 
@@ -362,11 +362,11 @@ async function maybeCompact(args: {
 const TOOL_PREFIX = 'HERRAMIENTA:';
 
 /** Build the user-role follow-up message carrying a tool result (or parse error). */
-async function toolResultMessage(parsed: ReturnType<typeof parseToolCall> & { kind: 'call' | 'error' }, approvedOrigins: ReadonlySet<string>): Promise<LLMChatMessage> {
+async function toolResultMessage(parsed: ReturnType<typeof parseToolCall> & { kind: 'call' | 'error' }, context: ToolExecutionContext): Promise<LLMChatMessage> {
   if (parsed.kind === 'error') {
     return { role: 'user', content: `[Error de herramienta]\n${parsed.error}` };
   }
-  const result = await executeTool(parsed.call, { approvedOrigins });
+  const result = await executeTool(parsed.call, context);
   return { role: 'user', content: `[Resultado de la herramienta ${parsed.call.tool}]\n${result}` };
 }
 
@@ -375,7 +375,7 @@ async function toolResultMessage(parsed: ReturnType<typeof parseToolCall> & { ki
  * call, execute it and ask again with the result appended. Returns the
  * final prose reply.
  */
-async function chatWithTools(provider: LLMProvider, messages: LLMChatMessage[], approvedOrigins: ReadonlySet<string>): Promise<string> {
+async function chatWithTools(provider: LLMProvider, messages: LLMChatMessage[], context: ToolExecutionContext): Promise<string> {
   let msgs = messages;
   const proseParts: string[] = [];
   for (let round = 0; ; round++) {
@@ -390,7 +390,7 @@ async function chatWithTools(provider: LLMProvider, messages: LLMChatMessage[], 
       proseParts.push('Intenté consultar las herramientas varias veces y no logré completar la acción. Probá con una pregunta más concreta.');
       return proseParts.join('\n\n');
     }
-    msgs = [...msgs, { role: 'assistant', content: raw }, await toolResultMessage(parsed, approvedOrigins)];
+    msgs = [...msgs, { role: 'assistant', content: raw }, await toolResultMessage(parsed, context)];
   }
 }
 
@@ -410,6 +410,7 @@ export const POST: APIRoute = async ({ request }) => {
   const convId = typeof conversationId === 'string' && conversationId.trim() !== '' ? conversationId.trim() : DEFAULT_CONVERSATION_ID;
   const wantStream = obj.stream === true;
   const approvedOrigins = approvedOriginsFromMessage(message.trim());
+  const toolContext = { approvedOrigins, conversationId: convId, currentUserMessage: message.trim(), turnStartedAt: new Date() };
 
   const { provider, status } = await getActiveAgent();
   if (!status.active) {
@@ -523,7 +524,7 @@ export const POST: APIRoute = async ({ request }) => {
               if (parsed.kind === 'call') {
                 controller.enqueue(encoder.encode(`event: status\ndata: ${JSON.stringify({ tool: parsed.call.tool })}\n\n`));
               }
-              msgs = [...msgs, { role: 'assistant', content: roundRaw }, await toolResultMessage(parsed, approvedOrigins)];
+              msgs = [...msgs, { role: 'assistant', content: roundRaw }, await toolResultMessage(parsed, toolContext)];
             }
             assistantText = visibleText;
             const final = stripThink(assistantText);
@@ -574,7 +575,7 @@ export const POST: APIRoute = async ({ request }) => {
 
   // 4. NON-STREAMING MODE: single round-trip, persist reply.
   try {
-    const rawReply = await chatWithTools(provider, ctx.messages, approvedOrigins);
+    const rawReply = await chatWithTools(provider, ctx.messages, toolContext);
     const reply = stripThink(rawReply);
 
     // Detect profile-improvement proposals embedded in the reply.
