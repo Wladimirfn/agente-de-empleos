@@ -201,11 +201,20 @@ export default function ProfilePage() {
   return (
     <div className="flex h-full flex-col overflow-y-auto">
       {/* Header */}
-      <div className="flex-shrink-0 border-b border-border bg-background px-6 py-4">
-        <h1 className="text-base font-semibold tracking-tight">Mi perfil</h1>
-        <p className="mt-0.5 text-xs text-fg-muted">
-          Datos del candidato, roles objetivo y propuestas pendientes.
-        </p>
+      <div className="flex flex-shrink-0 items-start justify-between gap-4 border-b border-border bg-background px-6 py-4">
+        <div>
+          <h1 className="text-base font-semibold tracking-tight">Mi perfil</h1>
+          <p className="mt-0.5 text-xs text-fg-muted">
+            Datos del candidato, roles objetivo y propuestas pendientes.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => { setConfirmingReset(true); setConfirmText(''); setResetError(null); }}
+          className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs font-medium text-danger hover:bg-danger/20"
+        >
+          Borrar perfil
+        </button>
       </div>
 
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-6 py-6">
@@ -418,23 +427,6 @@ export default function ProfilePage() {
             </div>
           </section>
         )}
-
-        {/* Reset profile */}
-        <section className="rounded-xl border border-danger/30 bg-danger/5 p-5">
-          <h2 className="text-sm font-semibold text-danger">Zona peligrosa</h2>
-          <p className="mt-1 text-xs text-fg-muted">
-            Borrar tu perfil elimina el perfil, experiencias, skills, roles objetivo,
-            documentos, propuestas pendientes, historial de chat, postulaciones y matches.
-            La configuración del proveedor de IA no se toca.
-          </p>
-          <button
-            type="button"
-            onClick={() => { setConfirmingReset(true); setConfirmText(''); setResetError(null); }}
-            className="mt-3 rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs font-medium text-danger hover:bg-danger/20"
-          >
-            Borrar perfil y empezar de cero
-          </button>
-        </section>
       </div>
 
       {/* Reset confirmation modal */}
