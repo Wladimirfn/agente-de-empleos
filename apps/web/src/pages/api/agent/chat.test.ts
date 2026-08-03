@@ -116,18 +116,18 @@ describe('POST /api/agent/chat', () => {
   it('executes a read tool in the non-streaming loop', async () => {
     const chat = vi.fn().mockResolvedValueOnce('HERRAMIENTA: {"tool":"list_activity","args":{"limit":2}}').mockResolvedValueOnce('Sin actividad reciente.');
     mockedGetActiveAgent.mockResolvedValue({ provider: { name: 'openai', model: 'm', chat }, status: { provider: 'openai', model: 'm', source: 'settings', hasKey: true, active: true } } as never);
-    const response = await callPost({ message: 'actividad' });
+    const response = await callPost({ message: 'actividad', conversationId: 'conv-deep' });
     expect((await response.json()).reply).toBe('Sin actividad reciente.');
-    expect(mockedExecuteTool).toHaveBeenCalledWith(expect.objectContaining({ tool: 'list_activity' }), expect.anything());
+    expect(mockedExecuteTool).toHaveBeenCalledWith(expect.objectContaining({ tool: 'list_activity' }), expect.objectContaining({ conversationId: 'conv-deep', currentUserMessage: 'actividad', turnStartedAt: expect.any(Date) }));
   });
 
   it('executes the same read tool in the streaming loop', async () => {
     let round = 0;
     const chatStream = vi.fn(async function* () { yield round++ === 0 ? 'HERRAMIENTA: {"tool":"list_activity","args":{}}' : 'Sin actividad reciente.'; });
     mockedGetActiveAgent.mockResolvedValue({ provider: { name: 'openai', model: 'm', chat: vi.fn(), chatStream }, status: { provider: 'openai', model: 'm', source: 'settings', hasKey: true, active: true } } as never);
-    const response = await callPost({ message: 'actividad', stream: true });
+    const response = await callPost({ message: 'actividad', conversationId: 'conv-deep', stream: true });
     expect(await response.text()).toContain('Sin actividad reciente.');
-    expect(mockedExecuteTool).toHaveBeenCalledWith(expect.objectContaining({ tool: 'list_activity' }), expect.anything());
+    expect(mockedExecuteTool).toHaveBeenCalledWith(expect.objectContaining({ tool: 'list_activity' }), expect.objectContaining({ conversationId: 'conv-deep', currentUserMessage: 'actividad', turnStartedAt: expect.any(Date) }));
   });
 
   it('returns a structured 503 without leaking internals when the provider fails', async () => {

@@ -16,6 +16,7 @@ import {
   jobs,
   platforms,
   agentRuns,
+  agentConfirmations,
 } from '@employment-agent/database/schema';
 import { eq } from 'drizzle-orm';
 
@@ -115,6 +116,7 @@ export const DELETE: APIRoute = async () => {
     await tx.delete(chatMemoryFacts).where(eq(chatMemoryFacts.profileId, profileId));
     await tx.delete(chatMessages).where(eq(chatMessages.profileId, profileId));
     await tx.delete(profileProposals).where(eq(profileProposals.profileId, profileId));
+    await tx.delete(agentConfirmations).where(eq(agentConfirmations.profileId, profileId));
     await tx.delete(candidateTargetRoles).where(eq(candidateTargetRoles.profileId, profileId));
     await tx.delete(candidateDocuments).where(eq(candidateDocuments.profileId, profileId));
     await tx.delete(candidateSkills).where(eq(candidateSkills.profileId, profileId));

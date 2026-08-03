@@ -22,6 +22,7 @@ import { and, asc, desc, eq, gte, like, sql } from 'drizzle-orm';
 import { parseScanSettingsInput } from './scan-settings.js';
 import { API_SOURCES, scanApiSource } from './scan-api-source.js';
 import { derivePlatformSlug, onboardPlatform } from './platform-onboarding.js';
+import { confirmDeepSearch, deepSearchStatus, proposeDeepSearch } from './deep-search.js';
 
 /**
  * Text-based tool calling for the agent chat.
@@ -58,19 +59,22 @@ export const TOOL_NAMES = [
   'list_platform_skills',
   'list_activity',
   'get_errors',
+  'deep_search_status',
   'trigger_scan',
+  'propose_deep_search',
+  'confirm_deep_search',
   'set_auto_scan',
   'add_platform',
 ] as const;
 type ToolName = typeof TOOL_NAMES[number];
-type ReadToolName = Extract<ToolName, 'get_profile_summary' | 'list_cv_documents' | 'list_jobs' | 'list_applications' | 'list_platforms' | 'list_platform_skills' | 'list_activity' | 'get_errors'>;
+type ReadToolName = Extract<ToolName, 'get_profile_summary' | 'list_cv_documents' | 'list_jobs' | 'list_applications' | 'list_platforms' | 'list_platform_skills' | 'list_activity' | 'get_errors' | 'deep_search_status'>;
 const KNOWN_TOOLS = new Set<string>(TOOL_NAMES);
-const READ_TOOLS = new Set<ReadToolName>(TOOL_NAMES.slice(0, 8) as ReadToolName[]);
+const READ_TOOLS = new Set<ReadToolName>(TOOL_NAMES.slice(0, 9) as ReadToolName[]);
 const READ_ARGS: Record<ReadToolName, Record<string, 'string' | 'number'>> = {
   get_profile_summary: {}, list_cv_documents: { limit: 'number' },
   list_jobs: { platform: 'string', query: 'string', minScore: 'number', limit: 'number' },
   list_applications: { status: 'string', limit: 'number' }, list_platforms: { limit: 'number' },
-  list_platform_skills: { limit: 'number' }, list_activity: { limit: 'number' }, get_errors: { limit: 'number' },
+  list_platform_skills: { limit: 'number' }, list_activity: { limit: 'number' }, get_errors: { limit: 'number' }, deep_search_status: { limit: 'number' },
 };
 
 /**
@@ -128,6 +132,7 @@ export function parseToolCall(text: string): ParseToolCallResult {
       return { kind: 'error', error: 'Estado de postulación inválido.' };
     }
   }
+  if ((tool === 'propose_deep_search' || tool === 'confirm_deep_search') && Object.keys(safeArgs).length > 0) return { kind: 'error', error: `${tool} no acepta argumentos del modelo.` };
   return { kind: 'call', call: { tool, args: safeArgs }, proseBefore };
 }
 
@@ -450,9 +455,10 @@ async function toolSetAutoScan(args: Record<string, unknown>): Promise<string> {
 }
 
 type ReadSource = (args: Record<string, unknown>) => Promise<unknown[]>;
+export interface ToolExecutionContext { approvedOrigins?: ReadonlySet<string>; conversationId?: string; currentUserMessage?: string; turnStartedAt?: Date; readSources?: Partial<Record<ReadToolName, ReadSource>> }
 
 /** Execute a parsed tool call against explicit local services. Never throws. */
-export async function executeTool(call: ToolCall, context: { approvedOrigins?: ReadonlySet<string>; readSources?: Partial<Record<ReadToolName, ReadSource>> } = {}): Promise<string> {
+export async function executeTool(call: ToolCall, context: ToolExecutionContext = {}): Promise<string> {
   try {
     if (READ_TOOLS.has(call.tool as ReadToolName)) {
       const tool = call.tool as ReadToolName;
@@ -466,11 +472,14 @@ export async function executeTool(call: ToolCall, context: { approvedOrigins?: R
         list_platform_skills: toolListPlatformSkills,
         list_activity: toolListActivity,
         get_errors: toolGetErrors,
+        deep_search_status: async (args) => { const profileId = await getProfileId(); return profileId ? deepSearchStatus(profileId, context.conversationId ?? 'default', clampLimit(args.limit)) : []; },
       } satisfies Record<ReadToolName, ReadSource>)[tool](call.args);
       return formatReadResult(tool, data, call.args.limit);
     }
     switch (call.tool) {
       case 'trigger_scan': return await toolTriggerScan(call.args);
+      case 'propose_deep_search': { const profileId = await getProfileId(); if (!profileId) return 'No hay un perfil activo.'; const result = await proposeDeepSearch(profileId, context.conversationId ?? 'default'); return `Confirmación de búsqueda profunda pendiente hasta ${result.expiresAt}. Pedile al usuario que confirme explícitamente en su próximo mensaje.`; }
+      case 'confirm_deep_search': { const profileId = await getProfileId(); if (!profileId) return 'No hay un perfil activo.'; const now = new Date(); return JSON.stringify(await confirmDeepSearch(profileId, context.conversationId ?? 'default', context.currentUserMessage ?? '', now, context.turnStartedAt ?? now)); }
       case 'set_auto_scan': return await toolSetAutoScan(call.args);
       case 'add_platform': return await toolAddPlatform(call.args, context.approvedOrigins ?? new Set());
       default: return `Error: herramienta desconocida "${call.tool}".`;
@@ -512,8 +521,13 @@ Herramientas disponibles:
 - get_errors — Corridas fallidas del agente, fallos de skills de scraping y healthchecks con problemas.
   args opcionales: limit.
 
+- deep_search_status — Estado acotado de búsquedas profundas y sus tareas por plataforma. args opcionales: limit.
+
 - trigger_scan — Encola un escaneo AHORA. Sin args escanea todas las plataformas con skill; con {"platform": "slug"} solo esa. Con {"platform": "slug", "agent": true} usa al agente navegador (el LLM abre un navegador y busca manualmente — más lento pero funciona en sitios con bloqueo o sin skill). Las plataformas sin skill SIEMPRE usan el agente.
   Usala para: "buscá ofertas ahora", "actualizá computrabajo", "activá el agente para que busque en indeed".
+
+- propose_deep_search — Después de una búsqueda normal, crea una confirmación pendiente por 15 minutos. No acepta args. Al recibir el resultado, pedile al usuario una confirmación explícita.
+- confirm_deep_search — Intenta iniciar la búsqueda profunda. No acepta args: el servidor usa exclusivamente el mensaje actual y la confirmación pendiente de esta conversación.
 
 - add_platform — Da de alta una plataforma de empleo nueva y encola al agente navegador para buscar ofertas ahí de inmediato.
   args: name (nombre visible), url (https://…) salvo portales preaprobados, slug opcional.
@@ -528,6 +542,7 @@ Reglas de las herramientas:
 - Si la pregunta necesita datos que no tenés en el contexto, USÁ la herramienta en vez de inventar o decir que no podés.
 - REGLA DE ORO — HONESTIDAD CON DATOS: JAMÁS inventes ofertas, empresas, sueldos, puntajes ni estados. Todo dato concreto tiene que venir del resultado de una herramienta. Si la herramienta devuelve 0 resultados o dice "No hay", reportás exactamente eso y ofrecés escanear. Una respuesta honesta de "no hay nada" vale mil veces más que una lista inventada.
 - Después de llamar una herramienta recibís el resultado y respondés al usuario en prosa normal, interpretando los datos.
+- Primero usá trigger_scan. Si el usuario quiere ampliar, ofrecé búsqueda profunda, llamá propose_deep_search y esperá otro turno. NUNCA afirmes que comenzó hasta que confirm_deep_search devuelva aceptación y tareas encoladas.
 - Si el usuario pide una ACCIÓN (escanear, activar, desactivar), ejecutala con la herramienta y después confirmale qué hiciste.
 - NUNCA muestres el JSON crudo del resultado al usuario: resumilo en lenguaje natural.
 - Todas las lecturas son acotadas y redactadas. No pidas archivos, SQL, shell, navegador ni payloads internos.
