@@ -14,7 +14,7 @@ import {
 } from '../../../lib/agent-memory.js';
 import { createProposal } from '../../../lib/profile-targets.js';
 import { db } from '@employment-agent/database';
-import { candidateProfiles, candidateExperiences, candidateSkills, chatMessages } from '@employment-agent/database/schema';
+import { candidateProfiles, chatMessages } from '@employment-agent/database/schema';
 import { and, asc, eq } from 'drizzle-orm';
 import { resolveModelContext, estimateTokens, estimateMessagesTokens } from '../../../lib/model-context.js';
 import { executeTool, parseToolCall, MAX_TOOL_ROUNDS, TOOLS_PROMPT } from '../../../lib/agent-tools.js';
@@ -67,19 +67,7 @@ function extractProposal(reply: string): { proposal: { summary: string; changes:
 }
 
 async function buildProfileContext(): Promise<string> {
-  let profileContext = '';
-  try {
-    const profiles = await db.select().from(candidateProfiles).limit(1);
-    if (profiles.length > 0) {
-      const p = profiles[0]!;
-      const exps = await db.select().from(candidateExperiences).where(eq(candidateExperiences.profileId, p.id));
-      const skills = await db.select().from(candidateSkills).where(eq(candidateSkills.profileId, p.id));
-      profileContext = `\n\nDatos del candidato:\n- Nombre: ${p.fullName ?? 'no disponible'}\n- Email: ${p.email ?? 'no disponible'}\n- Teléfono: ${p.phone ?? 'no disponible'}\n- Ubicación: ${p.location ?? 'no disponible'}\n- Resumen: ${p.summary ?? 'no disponible'}\n- Experiencias: ${exps.length > 0 ? exps.map(e => `${e.role} en ${e.company} (${e.startDate ?? ''}-${e.endDate ?? 'actual'})`).join('; ') : 'sin experiencias cargadas'}\n- Skills: ${skills.length > 0 ? skills.map(s => `${s.name}${s.years ? ` (${s.years} años)` : ''}`).join(', ') : 'sin skills cargados'}\n\nUsá estos datos para dar consejos personalizados. Si te preguntan por cargos posibles, recomendá basándote EXCLUSIVAMENTE en la experiencia y skills del candidato. Sé honesto: si no califica para algo, decílo.`;
-    }
-  } catch {
-    // No profile loaded — agent works without context.
-  }
-  return profileContext;
+  return '\n\nConsultá get_profile_summary cuando necesites datos laborales del candidato; no supongas datos personales ni de contacto.';
 }
 
 const PERSONA_PROMPT = `# Persona del asesor laboral
