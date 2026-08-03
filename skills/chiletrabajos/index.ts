@@ -1,3 +1,4 @@
+import type { PlatformSkill, ScanResult, SkillHealth, SkillContext } from '@employment-agent/skill-runtime';
 import type { CandidateProfile } from '@employment-agent/domain';
 
 const BASE_URL = 'https://www.chiletrabajos.cl';
@@ -165,3 +166,159 @@ export function ensureApprovedOrigin(url: string): URL {
 export interface ListingsFetch {
   get(url: string, options?: { timeout?: number }): Promise<{ ok(): boolean; status(): number; text(): Promise<string>; url?: () => string }>;
 }
+
+export interface ChiletrabajosScanOptions { fetcher?: ListingsFetch; now?: () => number }
+
+export interface PlaywrightApiResponse {
+  ok(): boolean;
+  status(): number;
+  text(): Promise<string>;
+  url(): string;
+}
+
+interface PlaywrightRequestContext { get(url: string, options?: unknown): Promise<PlaywrightApiResponse>; dispose(): Promise<void> }
+
+async function resolveClient(opts: ChiletrabajosScanOptions): Promise<{ client: ListingsFetch; owned: boolean; dispose?: () => Promise<void> }> {
+  if (opts.fetcher) return { client: opts.fetcher, owned: false };
+  const mod = await import('playwright');
+  const context = (await mod.request.newContext({ baseURL: BASE_URL, extraHTTPHeaders: DEFAULT_HEADERS })) as unknown as PlaywrightRequestContext;
+  return {
+    client: {
+      get: async (url: string, options?: { timeout?: number }) => {
+        const response = await context.get(url, options ?? {});
+        return { ok: () => response.ok(), status: () => response.status(), text: async () => response.text(), url: () => response.url() };
+      },
+    },
+    owned: true,
+    dispose: () => context.dispose(),
+  };
+}
+
+interface ScanStats { jobsFound: number; jobsDuplicate: number; errors: number }
+
+async function fetchListings(client: ListingsFetch, url: string): Promise<string> {
+  ensureApprovedOrigin(url);
+  const response = await client.get(url, { timeout: REQUEST_TIMEOUT_MS });
+  const status = response.status();
+  if (status >= 200 && status < 300) return response.text();
+  if (status >= 300 && status < 400) throw new Error(`Redirect no resuelto para <url>`);
+  throw new Error(`Chiletrabajos search HTTP ${status} (<url>)`);
+}
+
+function sanitizeError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  let cleaned = raw.replace(/\s+(at\s+[\w./:$<>]+\s*\(?[^)]*\)?|\bat\s+[\w./:$<>]+:\d+:\d+\)?)/gi, ' ');
+  cleaned = cleaned.replace(/https?:\/\/[^\s<>"']+/gi, '<url>').replace(/file:\/\/[^\s<>"']+/gi, '<url>');
+  cleaned = cleaned.replace(/(?:[A-Za-z]:\\|\/tmp\/|\/opt\/|\/srv\/|\/home\/|\/var\/|\/etc\/)[^\s<>"']*/gi, '<path>');
+  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+  return cleaned || 'error';
+}
+
+async function crawlPage(client: ListingsFetch, query: string, page: number, stats: ScanStats, ctx: SkillContext): Promise<string | null> {
+  try { return await fetchListings(client, buildListingsUrl(query, page)); }
+  catch (err) {
+    stats.errors++;
+    await ctx.events.emit({ kind: 'scan_error', message: `Error consultando Chiletrabajos.cl: ${sanitizeError(err)}`, payload: { query, page } });
+    return null;
+  }
+}
+
+async function buildJobCard(client: ListingsFetch, listingsHtml: string, card: ListingCard, now: () => number, deadline: number): Promise<NormalizedJob> {
+  const meta = parseListingMeta(listingsHtml, card.externalId);
+  const job = normalizeListing(card, meta);
+  if (now() >= deadline) {
+    job.description = `Oferta en Chiletrabajos.cl: ${job.title}.`.slice(0, MAX_TRUNCATED_DESCRIPTION);
+    return job;
+  }
+  try {
+    const detailHtml = await fetchListings(client, card.url);
+    const detail = parseDetailDescription(detailHtml);
+    if (detail.description) job.description = detail.description;
+    if (detail.modality) job.modality = detail.modality;
+    if (detail.employmentType) job.employmentType = detail.employmentType;
+  } catch {
+    job.description = `Oferta en Chiletrabajos.cl: ${job.title}.`;
+  }
+  return job;
+}
+
+export const chiletrabajosSkill: PlatformSkill = {
+  slug: 'chiletrabajos',
+  version: '0.1.0',
+  displayName: 'Chiletrabajos.cl',
+  requiredCandidateFields: [],
+  capabilities: { canScan: true, canApply: false, canDetectLoggedOut: false },
+
+  async scan(profile: CandidateProfile, ctx: SkillContext): Promise<ScanResult> {
+    const queries = buildQueries(profile);
+    await ctx.events.emit({ kind: 'scan_started', message: `Iniciando escaneo de Chiletrabajos.cl (${queries.join(', ')})`, payload: { profileId: profile.id ?? null, queries } });
+    const opts: ChiletrabajosScanOptions = {};
+    const now = opts.now ?? Date.now;
+    const deadline = now() + PER_SCAN_TIME_BUDGET_MS;
+    const resolved = await resolveClient(opts);
+    const stats: ScanStats = { jobsFound: 0, jobsDuplicate: 0, errors: 0 };
+    const seen = new Set<string>();
+    try {
+      try { await fetchListings(resolved.client, buildListingsUrl(queries[0] ?? '', 1)); }
+      catch (err) {
+        stats.errors++;
+        await ctx.events.emit({ kind: 'scan_error', message: `Error en warm-up de Chiletrabajos.cl: ${sanitizeError(err)}`, payload: { query: '<home>', page: 0 } });
+      }
+      for (const query of queries) {
+        for (let page = 1; page <= MAX_PAGES_PER_QUERY; page++) {
+          if (now() > deadline) break;
+          const html = await crawlPage(resolved.client, query, page, stats, ctx);
+          if (html === null) break;
+          const cards = parseListingsHtml(html);
+          if (cards.length === 0) break;
+          for (const card of cards) {
+            if (now() > deadline) break;
+            if (seen.has(card.externalId)) { stats.jobsDuplicate++; continue; }
+            seen.add(card.externalId);
+            const job = await buildJobCard(resolved.client, html, card, now, deadline);
+            stats.jobsFound++;
+            await ctx.events.emit({ kind: 'job_found', message: `Encontrada: ${job.title}${job.company ? ` en ${job.company}` : ''}`, payload: job });
+          }
+        }
+      }
+    } finally {
+      if (resolved?.owned && resolved.dispose) {
+        try { await resolved.dispose(); } catch { /* swallow dispose errors */ }
+      }
+    }
+    await ctx.events.emit({ kind: 'scan_completed', message: `Escaneo de Chiletrabajos.cl completado: ${stats.jobsFound} ofertas encontradas`, payload: { jobsFound: stats.jobsFound, errors: stats.errors } });
+    return { jobsFound: stats.jobsFound, jobsNew: stats.jobsFound, jobsDuplicate: stats.jobsDuplicate, errors: stats.errors };
+  },
+
+  async selfCheck(): Promise<SkillHealth> {
+    const detectedAt = new Date().toISOString();
+    let resolved: Awaited<ReturnType<typeof resolveClient>> | undefined;
+    try {
+      resolved = await resolveClient({});
+    } catch (err) {
+      return { status: 'broken', schemaVersion: '0.1.0', detectedAt, lastError: { code: 'CHILETRABAJOS_FETCH', message: err instanceof Error ? err.message : String(err) } };
+    }
+    try {
+      const response = await resolved.client.get(`${BASE_URL}${LISTINGS_PATH}`, { timeout: REQUEST_TIMEOUT_MS });
+      const status = response.status();
+      const finalUrl = response.url?.() ?? `${BASE_URL}${LISTINGS_PATH}`;
+      if (status >= 200 && status < 300) {
+        try { ensureApprovedOrigin(finalUrl); return { status: 'healthy', schemaVersion: '0.1.0', detectedAt }; }
+        catch { return { status: 'degraded', schemaVersion: '0.1.0', detectedAt }; }
+      }
+      if (status >= 300 && status < 400) {
+        try { ensureApprovedOrigin(finalUrl); return { status: 'healthy', schemaVersion: '0.1.0', detectedAt }; }
+        catch { return { status: 'degraded', schemaVersion: '0.1.0', detectedAt }; }
+      }
+      return { status: 'broken', schemaVersion: '0.1.0', detectedAt, lastError: { code: 'CHILETRABAJOS_HTTP', message: `HTTP ${status}` } };
+} catch (err) {
+      return { status: 'broken', schemaVersion: '0.1.0', detectedAt, lastError: { code: 'CHILETRABAJOS_FETCH', message: sanitizeError(err) } };
+    } finally {
+      if (resolved?.owned && resolved.dispose) {
+        try { await resolved.dispose(); } catch { /* swallow dispose errors */ }
+      }
+    }
+  },
+};
+
+export default chiletrabajosSkill;
