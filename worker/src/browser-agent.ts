@@ -13,7 +13,7 @@
 import type { LLMProvider, ChatMessage } from '@employment-agent/llm';
 import type { CandidateProfile } from '@employment-agent/domain';
 import type { BrowserAgentTools, PageState } from './browser-tools.js';
-import { createBrowserTools } from './browser-tools.js';
+import { createBrowserTools, hasUrlCredentials, sanitizeOutbound, sanitizeUrlsInText } from './browser-tools.js';
 
 export interface BrowserAgentResult {
   jobsFound: number;
@@ -34,6 +34,19 @@ export interface BrowserAgentJob {
 }
 
 const MAX_STEPS = 25;
+const ACTIONS = new Set(['navigate', 'click', 'type', 'press_enter', 'scroll', 'go_back', 'wait_human', 'save_jobs', 'done']);
+export function safeActionName(value: unknown): string {
+  const action = String(value ?? '');
+  return ACTIONS.has(action) ? action : 'unknown';
+}
+export function sanitizeBrowserJobs(jobs: unknown[]): BrowserAgentJob[] {
+  return sanitizeOutbound(jobs.filter((value) => {
+    const job = value as Record<string, unknown>;
+    return typeof job.externalId === 'string' && typeof job.title === 'string'
+      && !hasUrlCredentials(job.externalId)
+      && (typeof job.url !== 'string' || !hasUrlCredentials(job.url));
+  })) as BrowserAgentJob[];
+}
 
 const SYSTEM_PROMPT = `You are a browser agent controlling a web browser to search for jobs on a specific platform.
 
@@ -68,7 +81,7 @@ Rules:
 14. NEVER guess search-result URLs. Navigate ONLY to the platform homepage or to hrefs you actually see in the elements list. To search, use the page's own search input (type + press_enter) — guessing URLs wastes steps and usually fails.
 15. Your ONLY goal is to call save_jobs with real listings. Every step that doesn't move you toward visible job listings is wasted.`;
 
-function buildAgentPrompt(
+export function buildAgentPrompt(
   platform: string,
   profile: CandidateProfile,
   queries: string[],
@@ -81,7 +94,7 @@ function buildAgentPrompt(
     .slice(0, 10)
     .join(', ');
 
-  return `Goal: Search for jobs on ${platform}.
+  return sanitizeOutbound(`Goal: Search for jobs on ${platform}.
 
 Candidate profile:
 - Location: ${location} — YOU MUST filter by this location when the page offers a location/region filter
@@ -96,7 +109,7 @@ Instructions:
 3. If the location filter is a dropdown, select the option closest to "${location}".
 4. Search for each query. For each query, scroll through results and extract job listings.
 5. For each job: extract title, company, location (as shown), URL, and brief description.
-6. When done with all queries, save ALL jobs found and finish.`;
+6. When done with all queries, save ALL jobs found and finish.`);
 }
 
 function formatPageState(state: PageState): string {
@@ -167,6 +180,7 @@ export async function runBrowserAgent(args: {
   const tools = await createBrowserTools({
     headless: args.headless ?? false,
     storageState: args.storageState,
+    approvedOrigin: new URL(platformUrl).origin,
   });
 
   const messages: ChatMessage[] = [
@@ -197,26 +211,26 @@ export async function runBrowserAgent(args: {
 
       let response: string;
       try {
-        response = await llm.chat(messages);
+        response = await llm.chat(sanitizeOutbound(messages));
       } catch (err) {
         errors++;
-        await emit('agent_error', `LLM error: ${err instanceof Error ? err.message : String(err)}`);
+        await emit('agent_error', `LLM error: ${sanitizeUrlsInText(err instanceof Error ? err.message : String(err))}`);
         break;
       }
 
-      messages.push({ role: 'assistant', content: response });
+      messages.push({ role: 'assistant', content: sanitizeUrlsInText(response) });
 
       // Parse the action
       const action = parseAction(response);
       if (!action) {
         errors++;
-        await emit('agent_error', `Failed to parse LLM action: ${response.slice(0, 200)}`);
+        await emit('agent_error', 'Failed to parse LLM action');
         messages.push({ role: 'user', content: 'Invalid response. Respond with exactly one JSON action object.' });
         continue;
       }
 
-      const actionType = String(action.action ?? '');
-      await emit('agent_action', `Step ${steps}: ${actionType} — ${JSON.stringify(action).slice(0, 150)}`);
+      const actionType = safeActionName(action.action);
+      await emit('agent_action', `Step ${steps}: ${actionType}`);
 
       // Execute the action
       let result = '';
@@ -250,17 +264,14 @@ export async function runBrowserAgent(args: {
           result = await tools.goBack();
           break;
         case 'wait_human': {
-          const msg = String(action.message ?? 'Human intervention needed');
+          const msg = sanitizeUrlsInText(String(action.message ?? 'Human intervention needed'));
           await emit('agent_wait_human', msg);
           result = await tools.waitForHuman(msg);
           break;
         }
         case 'save_jobs': {
           const jobs = Array.isArray(action.jobs) ? action.jobs : [];
-          const validJobs = jobs.filter((j: unknown) => {
-            const job = j as Record<string, unknown>;
-            return typeof job.externalId === 'string' && typeof job.title === 'string';
-          }) as BrowserAgentJob[];
+          const validJobs = sanitizeBrowserJobs(jobs);
 
           if (validJobs.length > 0 && args.onJobsFound) {
             const counts = await args.onJobsFound(validJobs);
@@ -274,7 +285,7 @@ export async function runBrowserAgent(args: {
           break;
         }
         case 'done': {
-          const summary = String(action.summary ?? 'Agent finished');
+          const summary = sanitizeUrlsInText(String(action.summary ?? 'Agent finished'));
           await emit('agent_done', summary);
           return {
             jobsFound: totalNew + totalDup,

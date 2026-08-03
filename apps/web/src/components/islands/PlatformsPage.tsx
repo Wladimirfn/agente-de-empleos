@@ -47,14 +47,14 @@ export default function PlatformsPage() {
   const [scanning, setScanning] = useState<string | null>(null);
   const [scanMessage, setScanMessage] = useState<string | null>(null);
 
-  async function scanPlatform(slug: string, mode: 'skill' | 'agent' = 'skill') {
+  async function scanPlatform(slug: string, mode?: 'agent') {
     setScanning(slug);
     setScanMessage(null);
     try {
       const res = await fetch('/api/platforms/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slug, mode }),
+        body: JSON.stringify({ slug, ...(mode ? { mode } : {}) }),
       });
       const data = await res.json();
       if (data.scanned) {
@@ -176,7 +176,7 @@ export default function PlatformsPage() {
                   type="button"
                   className="rounded-lg border border-accent/30 px-3 py-1.5 text-xs text-accent hover:bg-accent/10 transition-colors disabled:opacity-50"
                   disabled={scanning === p.slug}
-                  onClick={() => scanPlatform(p.slug, 'skill')}
+                  onClick={() => scanPlatform(p.slug)}
                 >
                   {scanning === p.slug ? 'Escaneando…' : 'Escanear ahora'}
                 </button>

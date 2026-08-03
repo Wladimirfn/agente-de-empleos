@@ -16,6 +16,7 @@ import {
 import { and, desc, eq, gte, like, sql } from 'drizzle-orm';
 import { parseScanSettingsInput } from './scan-settings.js';
 import { API_SOURCES, scanApiSource } from './scan-api-source.js';
+import { derivePlatformSlug, onboardPlatform } from './platform-onboarding.js';
 
 /**
  * Text-based tool calling for the agent chat.
@@ -285,75 +286,16 @@ async function toolGetErrors(args: Record<string, unknown>): Promise<string> {
 
 /** Derive a URL-safe slug from a platform URL: "https://www.chiletrabajos.cl/empleos" → "chiletrabajos", "https://cl.indeed.com" → "indeed". */
 export function deriveSlug(url: string): string | null {
-  let host: string;
-  try {
-    host = new URL(url).hostname.toLowerCase();
-  } catch {
-    return null;
-  }
-  const labels = host.replace(/^www\./, '').split('.');
-  // Country subdomains (cl.indeed.com, ar.linkedin.com) — the brand is the
-  // second label, not the 2-letter country code.
-  const candidate = labels.length >= 3 && labels[0]!.length <= 2 ? labels[1]! : labels[0]!;
-  const slug = (candidate ?? '').replace(/[^a-z0-9-]/g, '');
-  return slug.length >= 2 ? slug : null;
+  try { return derivePlatformSlug(url); } catch { return null; }
 }
 
-function isValidHttpUrl(value: string): boolean {
-  try {
-    const u = new URL(value);
-    return u.protocol === 'http:' || u.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
-async function enqueueBrowserAgentScan(slug: string, platformUrl: string): Promise<string> {
-  const taskId = randomUUID();
-  await db.insert(taskQueue).values({
-    id: taskId,
-    type: 'BROWSER_AGENT_SCAN',
-    payloadJson: JSON.stringify({ skillSlug: slug, platformUrl, triggeredBy: 'chat' }),
-    status: 'pending',
-    attempts: 0,
-    maxAttempts: 1, // browser agent is expensive — one shot
-    scheduledAt: new Date().toISOString(),
-  });
-  return taskId;
-}
-
-async function toolAddPlatform(args: Record<string, unknown>): Promise<string> {
+async function toolAddPlatform(args: Record<string, unknown>, approvedOrigins: ReadonlySet<string>): Promise<string> {
   const name = typeof args.name === 'string' ? args.name.trim() : '';
   const url = typeof args.url === 'string' ? args.url.trim() : '';
   if (name === '') return 'Error: falta el nombre de la plataforma (args.name).';
-  if (url === '' || !isValidHttpUrl(url)) {
-    return `Error: URL inválida "${url}". Tiene que ser http(s), ej: https://www.chiletrabajos.cl`;
-  }
-
-  const slug = typeof args.slug === 'string' && args.slug.trim() !== ''
-    ? args.slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, '')
-    : deriveSlug(url);
-  if (!slug) return 'Error: no pude derivar un slug de esa URL. Pasá args.slug explícito.';
-
-  // Duplicate check: by slug or by host.
-  const host = new URL(url).hostname.toLowerCase().replace(/^www\./, '');
-  const existing = await db.select().from(platforms);
-  const dupe = existing.find((p) =>
-    p.slug === slug ||
-    (p.baseUrl !== null && new URL(p.baseUrl).hostname.toLowerCase().replace(/^www\./, '') === host));
-  if (dupe) {
-    return `La plataforma ya existe: ${dupe.displayName} (${dupe.slug}). Podés escanearla con trigger_scan.`;
-  }
-
-  await db.insert(platforms).values({
-    slug,
-    displayName: name,
-    baseUrl: url,
-    status: 'active',
-  });
-
-  const taskId = await enqueueBrowserAgentScan(slug, url);
-  return `Plataforma "${name}" (${slug}) agregada y activa. Encolé al agente navegador para buscar ofertas ahí ahora (tarea ${taskId}): el LLM abre un navegador, busca según tu perfil y guarda lo que encuentre. Ojo: como no tiene skill determinística, los scans de esta plataforma son bajo demanda (pedimelos por chat o desde Plataformas), no entran al ciclo automático.`;
+  const result = await onboardPlatform({ name, url: url || undefined, slug: typeof args.slug === 'string' ? args.slug : undefined, scanExisting: args.scan === true }, approvedOrigins);
+  if (!result.created) return `La plataforma ya existe: ${result.platform.displayName} (${result.platform.slug}).${result.taskId ? ' Encolé un nuevo escaneo solicitado.' : ''}`;
+  return `Plataforma "${name}" (${result.platform.slug}) agregada y activa. Encolé al agente navegador para buscar ofertas.`;
 }
 
 async function toolTriggerScan(args: Record<string, unknown>): Promise<string> {
@@ -393,20 +335,17 @@ async function toolTriggerScan(args: Record<string, unknown>): Promise<string> {
       if (!platform.baseUrl) {
         return `Error: ${platform.displayName} no tiene URL registrada ni skill instalada — no hay forma de escanearla.`;
       }
-      const agentTaskId = await enqueueBrowserAgentScan(slug, platform.baseUrl);
+      const { enqueuePlatformScan } = await import('./platform-onboarding.js');
+      const agentTaskId = await enqueuePlatformScan({ slug, url: platform.baseUrl }, 'chat');
+      if (!agentTaskId) return `Ya existe un escaneo activo para ${platform.displayName}.`;
       return `Agente navegador encolado para ${platform.displayName} (tarea ${agentTaskId}). El LLM abre un navegador visible y busca ofertas según tu perfil; si aparece un CAPTCHA podés resolverlo a mano.`;
     }
 
-    await db.insert(taskQueue).values({
-      id: taskId,
-      type: 'SCAN_PLATFORM',
-      payloadJson: JSON.stringify({ skillSlug: slug, triggeredBy: 'chat' }),
-      status: 'pending',
-      attempts: 0,
-      maxAttempts: 3,
-      scheduledAt: new Date().toISOString(),
-    });
-    return `Scan de ${platform.displayName} encolado (tarea ${taskId}). El worker la procesa en segundos y puntúa las ofertas nuevas automáticamente.`;
+    const { enqueuePlatformScan } = await import('./platform-onboarding.js');
+    const scanTaskId = await enqueuePlatformScan({ slug }, 'chat', 'SCAN_PLATFORM');
+    return scanTaskId
+      ? `Scan de ${platform.displayName} encolado (tarea ${scanTaskId}). El worker la procesa en segundos y puntúa las ofertas nuevas automáticamente.`
+      : `Ya existe un escaneo activo para ${platform.displayName}.`;
   }
 
   await db.insert(taskQueue).values({
@@ -454,7 +393,7 @@ async function toolSetAutoScan(args: Record<string, unknown>): Promise<string> {
 }
 
 /** Execute a parsed tool call against the local database. Never throws. */
-export async function executeTool(call: ToolCall): Promise<string> {
+export async function executeTool(call: ToolCall, context: { approvedOrigins?: ReadonlySet<string> } = {}): Promise<string> {
   try {
     switch (call.tool) {
       case 'list_jobs': return await toolListJobs(call.args);
@@ -463,7 +402,7 @@ export async function executeTool(call: ToolCall): Promise<string> {
       case 'get_errors': return await toolGetErrors(call.args);
       case 'trigger_scan': return await toolTriggerScan(call.args);
       case 'set_auto_scan': return await toolSetAutoScan(call.args);
-      case 'add_platform': return await toolAddPlatform(call.args);
+      case 'add_platform': return await toolAddPlatform(call.args, context.approvedOrigins ?? new Set());
       default: return `Error: herramienta desconocida "${call.tool}".`;
     }
   } catch (err) {
@@ -500,7 +439,7 @@ Herramientas disponibles:
   Usala para: "buscá ofertas ahora", "actualizá computrabajo", "activá el agente para que busque en indeed".
 
 - add_platform — Da de alta una plataforma de empleo nueva y encola al agente navegador para buscar ofertas ahí de inmediato.
-  args: name (nombre visible), url (https://…), slug opcional (se deriva de la URL si falta).
+  args: name (nombre visible), url (https://…) salvo portales preaprobados, slug opcional.
   Usala para: "agregá chiletrabajos", "sumá el portal de empleos del Mercurio".
   Vos conocés portales de empleo de Chile y el mundo: si el usuario pide más fuentes, proponé 3-5 portales concretos con su URL y, cuando confirme, agregalos con esta herramienta. NO inventes URLs que no conocés con certeza.
 

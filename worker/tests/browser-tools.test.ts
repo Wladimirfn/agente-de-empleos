@@ -1,0 +1,66 @@
+import { describe, expect, it } from 'vitest';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
+import { NAVIGATION_POLICY_ERROR, createBrowserTools, isApprovedOrigin, sanitizePageState, sanitizeUrl, sanitizeUrlsInText } from '../src/browser-tools.js';
+import { buildAgentPrompt, safeActionName, sanitizeBrowserJobs } from '../src/browser-agent.js';
+async function listen(server: ReturnType<typeof createServer>): Promise<string> {
+  server.listen(0, '127.0.0.1'); await once(server, 'listening'); const address = server.address(); return `http://127.0.0.1:${typeof address === 'object' ? address!.port : 0}`;
+}
+describe('browser origin pinning', () => {
+  it('allows paths on the approved origin only', () => {
+    expect(isApprovedOrigin('https://jobs.example.com/search?q=tech', 'https://jobs.example.com')).toBe(true);
+    expect(isApprovedOrigin('https://evil.example/search', 'https://jobs.example.com')).toBe(false);
+    expect(isApprovedOrigin('https://user:pass@jobs.example.com/search', 'https://jobs.example.com')).toBe(false);
+    expect([safeActionName('click'), safeActionName('evil?q=secret')]).toEqual(['click', 'unknown']);
+  });
+  it('strips credentials, queries, and fragments from outward URLs', () => {
+    expect(sanitizeUrl('https://jobs.example.com/search?q=secret#person')).toBe('https://jobs.example.com/search');
+    expect(sanitizeUrl('https://user:pass@jobs.example.com/private?q=secret')).toBe('[blocked URL]');
+    expect(sanitizeUrlsInText('Now on https://jobs.example.com/search?q=secret#person')).toBe('Now on https://jobs.example.com/search');
+    expect(sanitizeUrl(`https://jobs.example.com/${'x'.repeat(1000)}`)).toHaveLength(500);
+    const rawState = {
+      url: 'https://jobs.example.com/search?q=secret#person',
+      title: 'Results https://jobs.example.com/search?q=secret',
+      text: 'Apply at https://jobs.example.com/job/1?token=secret#person',
+      elements: [{ index: 0, tag: 'a', text: 'Job https://jobs.example.com?q=secret', href: 'https://jobs.example.com/job/1?token=secret#person', placeholder: 'See https://jobs.example.com?q=secret' },
+        { index: 1, tag: 'a', text: 'Bad', href: 'https://user:pass@jobs.example.com/private' }],
+    };
+    const state = sanitizePageState(rawState);
+    expect(rawState.elements[0]!.href).toContain('?token=secret#person');
+    expect(state).toMatchObject({ url: 'https://jobs.example.com/search', elements: [{ href: 'https://jobs.example.com/job/1' }, { href: '[blocked URL]' }] });
+    expect(JSON.stringify(state)).not.toMatch(/secret|person|user:pass/);
+    const jobs = sanitizeBrowserJobs([{ externalId: 'id', title: 'Role https://jobs.example.com?q=secret', company: 'Co https://user:pass@jobs.example.com', nested: { 'https://jobs.example.com/key?token=secret': 'first', 'https://jobs.example.com/key#fragment': 'second' } }]);
+    expect(JSON.stringify(jobs)).not.toMatch(/secret|user:pass/);
+    expect((jobs[0] as unknown as { nested: object }).nested).toEqual({ 'https://jobs.example.com/key': 'second' });
+    const prompt = buildAgentPrompt('Portal https://user:pass@jobs.example.com', { location: 'City https://jobs.example.com?token=secret', email: 'private@example.com', phone: '555', summary: 'Roles objetivo activos: Role https://jobs.example.com?q=secret', skills: [{ name: 'Skill https://jobs.example.com#fragment' }] } as never, ['Query https://jobs.example.com?secret=yes']);
+    expect(prompt).toContain('City'); expect(prompt).not.toMatch(/secret|fragment|user:pass|private@example|555/);
+  });
+  it('blocks redirect, JS, form, popup, and direct-link navigation before external requests', async () => {
+    let externalHits = 0;
+    const external = createServer((_req, res) => { externalHits++; res.end('external'); });
+    const externalOrigin = await listen(external);
+    let approvedOrigin = '';
+    const approved = createServer((req, res) => {
+      res.setHeader('Content-Type', 'text/html'); if (req.url === '/redirect') { res.writeHead(302, { Location: externalOrigin }); res.end(); return; }
+      if (req.url === '/same') { res.end('<h1>same</h1>'); return; }
+      res.end(`<img src="${externalOrigin}/pixel"><a href="/same">Same</a><a href="${externalOrigin}">Direct</a><a href="/redirect">Redirect</a><form action="${externalOrigin}"><input id="q"><button>Submit</button></form><button onclick="location.href='${externalOrigin}'">Dynamic</button><button onclick="window.open('${externalOrigin}')">Popup</button>`);
+    });
+    approvedOrigin = await listen(approved);
+    const tools = await createBrowserTools({ headless: true, approvedOrigin });
+    try {
+      expect(await tools.navigate(`${approvedOrigin}/`)).toContain(approvedOrigin);
+      const index = async (text: string) => (await tools.extractPage()).elements.find((item) => item.text === text)!.index;
+      expect(await tools.goBack()).toContain('disabled');
+      expect(await tools.navigate(`${approvedOrigin}/same`)).toContain('/same');
+      await tools.navigate(`${approvedOrigin}/`);
+      for (const action of ['Dynamic', 'Popup', 'Direct']) expect(await tools.click(await index(action))).toBe(NAVIGATION_POLICY_ERROR);
+      await tools.typeText(await index(''), 'query');
+      expect(await tools.pressEnter()).toBe(NAVIGATION_POLICY_ERROR);
+      expect(await tools.navigate(`${approvedOrigin}/redirect`)).toBe(NAVIGATION_POLICY_ERROR);
+      expect((await tools.extractPage()).url).toBe(`${approvedOrigin}/`);
+      expect(externalHits).toBe(0);
+    } finally {
+      await tools.close(); approved.close(); external.close();
+    }
+  }, 30_000);
+});
