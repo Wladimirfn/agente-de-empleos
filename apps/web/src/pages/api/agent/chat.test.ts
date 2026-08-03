@@ -37,11 +37,17 @@ vi.mock('@employment-agent/database/schema', () => ({
   candidateSkills: {},
   chatMessages: {},
 }));
+vi.mock('../../../lib/agent-tools.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../lib/agent-tools.js')>();
+  return { ...actual, executeTool: vi.fn(async () => '{"count":0,"items":[]}') };
+});
 
 import { getActiveAgent } from '../../../lib/agent.js';
+import { executeTool } from '../../../lib/agent-tools.js';
 import { POST } from './chat.js';
 
 const mockedGetActiveAgent = vi.mocked(getActiveAgent);
+const mockedExecuteTool = vi.mocked(executeTool);
 
 function callPost(body: unknown) {
   return POST({
@@ -82,8 +88,9 @@ describe('POST /api/agent/chat', () => {
   });
 
   it('returns the provider reply on success', async () => {
+    const chat = vi.fn().mockResolvedValue('respuesta real');
     mockedGetActiveAgent.mockResolvedValue({
-      provider: { name: 'openai', model: 'gpt-4o-mini', chat: vi.fn().mockResolvedValue('respuesta real') },
+      provider: { name: 'openai', model: 'gpt-4o-mini', chat },
       status: { provider: 'openai', model: 'gpt-4o-mini', source: 'settings', hasKey: true, active: true },
     } as never);
 
@@ -101,6 +108,26 @@ describe('POST /api/agent/chat', () => {
     });
     expect(typeof body.usage.tokens).toBe('number');
     expect(typeof body.usage.contextWindow).toBe('number');
+    const prompt = JSON.stringify(chat.mock.calls[0]?.[0]);
+    expect(prompt).toContain('get_profile_summary');
+    expect(prompt).not.toMatch(/- (?:Nombre|Email|Teléfono):/);
+  });
+
+  it('executes a read tool in the non-streaming loop', async () => {
+    const chat = vi.fn().mockResolvedValueOnce('HERRAMIENTA: {"tool":"list_activity","args":{"limit":2}}').mockResolvedValueOnce('Sin actividad reciente.');
+    mockedGetActiveAgent.mockResolvedValue({ provider: { name: 'openai', model: 'm', chat }, status: { provider: 'openai', model: 'm', source: 'settings', hasKey: true, active: true } } as never);
+    const response = await callPost({ message: 'actividad' });
+    expect((await response.json()).reply).toBe('Sin actividad reciente.');
+    expect(mockedExecuteTool).toHaveBeenCalledWith(expect.objectContaining({ tool: 'list_activity' }), expect.anything());
+  });
+
+  it('executes the same read tool in the streaming loop', async () => {
+    let round = 0;
+    const chatStream = vi.fn(async function* () { yield round++ === 0 ? 'HERRAMIENTA: {"tool":"list_activity","args":{}}' : 'Sin actividad reciente.'; });
+    mockedGetActiveAgent.mockResolvedValue({ provider: { name: 'openai', model: 'm', chat: vi.fn(), chatStream }, status: { provider: 'openai', model: 'm', source: 'settings', hasKey: true, active: true } } as never);
+    const response = await callPost({ message: 'actividad', stream: true });
+    expect(await response.text()).toContain('Sin actividad reciente.');
+    expect(mockedExecuteTool).toHaveBeenCalledWith(expect.objectContaining({ tool: 'list_activity' }), expect.anything());
   });
 
   it('returns a structured 503 without leaking internals when the provider fails', async () => {

@@ -2,8 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { db } from '@employment-agent/database';
 import {
   agentRuns,
+  applicationEvents,
   applications,
+  candidateDocuments,
+  candidateExperiences,
   candidateProfiles,
+  candidateSkills,
+  candidateTargetRoles,
   jobMatches,
   jobs,
   platforms,
@@ -13,7 +18,7 @@ import {
   skillHealthchecks,
   taskQueue,
 } from '@employment-agent/database/schema';
-import { and, desc, eq, gte, like, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, like, sql } from 'drizzle-orm';
 import { parseScanSettingsInput } from './scan-settings.js';
 import { API_SOURCES, scanApiSource } from './scan-api-source.js';
 import { derivePlatformSlug, onboardPlatform } from './platform-onboarding.js';
@@ -30,7 +35,7 @@ import { derivePlatformSlug, onboardPlatform } from './platform-onboarding.js';
 export const MAX_TOOL_ROUNDS = 3;
 const MAX_RESULT_CHARS = 4000;
 const DEFAULT_LIMIT = 10;
-const MAX_LIMIT = 25;
+const MAX_LIMIT = 50;
 
 export interface ToolCall {
   tool: string;
@@ -44,15 +49,29 @@ export type ParseToolCallResult =
 
 const TOOL_PREFIX = 'HERRAMIENTA:';
 
-const KNOWN_TOOLS = new Set([
+export const TOOL_NAMES = [
+  'get_profile_summary',
+  'list_cv_documents',
   'list_jobs',
   'list_applications',
   'list_platforms',
+  'list_platform_skills',
+  'list_activity',
   'get_errors',
   'trigger_scan',
   'set_auto_scan',
   'add_platform',
-]);
+] as const;
+type ToolName = typeof TOOL_NAMES[number];
+type ReadToolName = Extract<ToolName, 'get_profile_summary' | 'list_cv_documents' | 'list_jobs' | 'list_applications' | 'list_platforms' | 'list_platform_skills' | 'list_activity' | 'get_errors'>;
+const KNOWN_TOOLS = new Set<string>(TOOL_NAMES);
+const READ_TOOLS = new Set<ReadToolName>(TOOL_NAMES.slice(0, 8) as ReadToolName[]);
+const READ_ARGS: Record<ReadToolName, Record<string, 'string' | 'number'>> = {
+  get_profile_summary: {}, list_cv_documents: { limit: 'number' },
+  list_jobs: { platform: 'string', query: 'string', minScore: 'number', limit: 'number' },
+  list_applications: { status: 'string', limit: 'number' }, list_platforms: { limit: 'number' },
+  list_platform_skills: { limit: 'number' }, list_activity: { limit: 'number' }, get_errors: { limit: 'number' },
+};
 
 /**
  * Detect a tool call in the model's reply. The call may be the whole reply or
@@ -97,7 +116,19 @@ export function parseToolCall(text: string): ParseToolCallResult {
     if (proseBefore !== '') return { kind: 'none' };
     return { kind: 'error', error: '"args" debe ser un objeto JSON.' };
   }
-  return { kind: 'call', call: { tool, args: (args ?? {}) as Record<string, unknown> }, proseBefore };
+  const safeArgs = (args ?? {}) as Record<string, unknown>;
+  if (READ_TOOLS.has(tool as ReadToolName)) {
+    const shape = READ_ARGS[tool as ReadToolName];
+    for (const [key, value] of Object.entries(safeArgs)) {
+      if (!shape[key] || typeof value !== shape[key] || (typeof value === 'number' && (!Number.isFinite(value) || (key === 'limit' && value <= 0) || (key === 'minScore' && (value < 0 || value > 100)))) || (typeof value === 'string' && value.length > 100)) {
+        return { kind: 'error', error: `Argumentos inválidos para ${tool}. Permitidos: ${Object.entries(shape).map(([k, v]) => `${k}:${v}`).join(', ') || 'ninguno'}.` };
+      }
+    }
+    if (tool === 'list_applications' && typeof safeArgs.status === 'string' && !['draft', 'ready', 'submitted', 'failed', 'rejected'].includes(safeArgs.status)) {
+      return { kind: 'error', error: 'Estado de postulación inválido.' };
+    }
+  }
+  return { kind: 'call', call: { tool, args: safeArgs }, proseBefore };
 }
 
 function clampLimit(value: unknown): number {
@@ -105,17 +136,73 @@ function clampLimit(value: unknown): number {
   return Math.min(MAX_LIMIT, Math.max(1, Math.floor(value)));
 }
 
-function truncate(text: string): string {
-  return text.length > MAX_RESULT_CHARS ? `${text.slice(0, MAX_RESULT_CHARS)}… [truncado]` : text;
+const SENSITIVE_KEY = /^(?:password|token|api[-_]?key|secret|authorization)$/i;
+function safeString(value: string): string {
+  if (/^\d{4}-\d{2}-\d{2}(?:(?:T| )\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?$/.test(value)) return value.slice(0, 40);
+  return value.replace(/https?:\/\/[^\s<>"']+/gi, (raw) => { try { const url = new URL(raw); return `${url.origin}${url.pathname}`; } catch { return '[redacted URL]'; } })
+    .replace(/<[^>]*>/g, ' ').replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, '[redacted email]').replace(/\+?\d(?:[\s().-]*\d){7,}/g, '[redacted phone]')
+    .replace(/\b(?:sk-[\w-]{6,}|gh[pousr]_[A-Za-z\d]{20,}|github_pat_[\w]{20,}|Bearer\s+\S+|eyJ[A-Za-z\d_-]*\.[A-Za-z\d_-]+\.[A-Za-z\d_-]+)\b/gi, '[redacted credential]')
+    .replace(/["']?(?:password|token|api[-_]?key|secret|authorization)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;}]+)/gi, '"[redacted key]":"[redacted]"')
+    .replace(/\bat\s+(?:(?:async|new)\s+)?(?:[\w$.<>]+\s*\([^)]*:\d+:\d+\)|(?:file:\/\/)?(?:[A-Za-z]:[\\/]|\/)[^\s)]+:\d+:\d+\)?)/gi, '[redacted stack]').replace(/(^|[\s("'=])(?:[A-Za-z]:[\\/]|\\\\[^\\\s]+\\)[^\s"']+/g, '$1[redacted path]')
+    .replace(/(^|[\s("'=])\/(?:home|Users|opt|srv|var|etc|tmp)\/[^\s"')]+/gi, '$1[redacted path]').replace(/\b[a-f\d]{32,}\b/gi, '[redacted hash]')
+    .replace(/\s+/g, ' ').trim().slice(0, 300);
+}
+function safeValue(value: unknown, depth = 0): unknown {
+  if (depth > 6) return '[redacted]';
+  if (typeof value === 'string') return safeString(value);
+  if (Array.isArray(value)) return value.slice(0, MAX_LIMIT).map((item) => safeValue(item, depth + 1));
+  if (value && typeof value === 'object') return Object.fromEntries(new Map(Object.entries(value).slice(0, 30).map(([key, item]) => {
+    const sensitive = SENSITIVE_KEY.test(key); return [sensitive ? '[redacted key]' : safeString(key), sensitive ? '[redacted]' : safeValue(item, depth + 1)];
+  })));
+  return value;
+}
+
+export function coarseLocation(value: string | null): string | null {
+  if (!value) return null;
+  const parts = value.replace(/\(?[-+]?\d{1,3}\.\d+\s*,\s*[-+]?\d{1,3}\.\d+\)?/g, '').split(',').map((part) => part.trim()).filter(Boolean);
+  const address = /\d|\b(?:street|st\.?|road|rd\.?|avenida|av\.?|calle|pasaje|pje\.?|ruta|apartment|apt\.?)\b|#/i;
+  while (parts.length > 2 && address.test(parts[0]!)) parts.shift();
+  return parts.length === 0 || (parts.length === 1 && address.test(parts[0]!)) ? null : parts.slice(-3).join(', ');
+}
+
+export function formatReadResult(tool: ReadToolName, data: unknown[], requestedLimit?: unknown): string {
+  const limit = clampLimit(requestedLimit);
+  const sanitized = safeValue(data.slice(0, limit)) as unknown[];
+  const items: unknown[] = [];
+  for (const item of sanitized) {
+    if (JSON.stringify({ tool, count: items.length + 1, limit, truncated: true, items: [...items, item] }).length > MAX_RESULT_CHARS) break;
+    items.push(item);
+  }
+  return JSON.stringify({ tool, count: items.length, limit, truncated: items.length < sanitized.length, items });
 }
 
 async function getProfileId(): Promise<number | null> {
-  const rows = await db.select({ id: candidateProfiles.id }).from(candidateProfiles).limit(1);
+  const rows = await db.select({ id: candidateProfiles.id }).from(candidateProfiles).orderBy(desc(candidateProfiles.id)).limit(1);
   return rows[0]?.id ?? null;
 }
 
-async function toolListJobs(args: Record<string, unknown>): Promise<string> {
+async function toolGetProfileSummary(): Promise<unknown[]> {
+  const profile = (await db.select({ id: candidateProfiles.id, summary: candidateProfiles.summary, location: candidateProfiles.location, searchScope: candidateProfiles.searchScope }).from(candidateProfiles).orderBy(desc(candidateProfiles.id)).limit(1))[0];
+  if (!profile) return [];
+  const [experiences, skills, roles] = await Promise.all([
+    db.select({ role: candidateExperiences.role, company: candidateExperiences.company, startDate: candidateExperiences.startDate, endDate: candidateExperiences.endDate, summary: candidateExperiences.description }).from(candidateExperiences).where(eq(candidateExperiences.profileId, profile.id)).orderBy(desc(candidateExperiences.createdAt), desc(candidateExperiences.id)).limit(20),
+    db.select({ name: candidateSkills.name }).from(candidateSkills).where(eq(candidateSkills.profileId, profile.id)).orderBy(asc(candidateSkills.name), asc(candidateSkills.id)).limit(50),
+    db.select({ role: candidateTargetRoles.roleTitle, priority: candidateTargetRoles.priority }).from(candidateTargetRoles).where(and(eq(candidateTargetRoles.profileId, profile.id), eq(candidateTargetRoles.isActive, 1))).orderBy(asc(candidateTargetRoles.priority), asc(candidateTargetRoles.id)).limit(20),
+  ]);
+  return [{ summary: profile.summary, location: coarseLocation(profile.location), searchScope: profile.searchScope, targetRoles: roles, experiences, skills: skills.map((s) => s.name) }];
+}
+
+async function toolListCvDocuments(args: Record<string, unknown>): Promise<unknown[]> {
+  const profile = (await db.select({ id: candidateProfiles.id, activeDocumentId: candidateProfiles.supersededByDocumentId }).from(candidateProfiles).orderBy(desc(candidateProfiles.id)).limit(1))[0];
+  if (!profile) return [];
+  const rows = await db.select({ kind: candidateDocuments.kind, mimeType: candidateDocuments.mimeType, uploadedAt: candidateDocuments.createdAt, id: candidateDocuments.id }).from(candidateDocuments)
+    .where(eq(candidateDocuments.profileId, profile.id)).orderBy(desc(candidateDocuments.createdAt), desc(candidateDocuments.id)).limit(clampLimit(args.limit));
+  return rows.map(({ id, ...row }) => ({ displayName: row.kind.replaceAll('_', ' '), type: row.mimeType ?? row.kind, uploadedAt: row.uploadedAt, status: id === profile.activeDocumentId ? 'active' : 'stored' }));
+}
+
+async function toolListJobs(args: Record<string, unknown>): Promise<unknown[]> {
   const profileId = await getProfileId();
+  if (profileId === null) return [];
   const limit = clampLimit(args.limit);
   const conditions = [];
   if (typeof args.platform === 'string' && args.platform.trim() !== '') {
@@ -130,84 +217,51 @@ async function toolListJobs(args: Record<string, unknown>): Promise<string> {
 
   const base = db
     .select({
-      id: jobs.id,
-      titulo: jobs.title,
-      empresa: jobs.company,
-      ubicacion: jobs.location,
-      url: jobs.url,
-      plataforma: platforms.displayName,
-      puntaje: profileId !== null ? jobMatches.score : sql<number | null>`null`,
-      publicada: jobs.firstSeenAt,
-      descripcion: jobs.description,
+      title: jobs.title, company: jobs.company, location: jobs.location, platform: platforms.displayName,
+      score: jobMatches.score, seenAt: jobs.firstSeenAt,
     })
     .from(jobs)
     .innerJoin(platforms, eq(jobs.platformId, platforms.id));
 
-  const withMatch = profileId !== null
-    ? base.leftJoin(jobMatches, and(eq(jobMatches.jobId, jobs.id), eq(jobMatches.profileId, profileId)))
-    : base;
+  const withMatch = base.leftJoin(jobMatches, and(eq(jobMatches.jobId, jobs.id), eq(jobMatches.profileId, profileId)));
 
   const rows = await withMatch
     .where(conditions.length > 0 ? and(...conditions) : undefined)
-    .orderBy(desc(jobMatches.score), desc(jobs.firstSeenAt))
+    .orderBy(desc(jobMatches.score), desc(jobs.firstSeenAt), desc(jobs.id))
     .limit(limit);
 
-  if (rows.length === 0) {
-    return 'RESULTADO: 0 ofertas que cumplen esos filtros. INSTRUCCIÓN OBLIGATORIA: no inventes ofertas, empresas ni puntajes — decile al usuario que no hay resultados y ofrecé escanear la plataforma con trigger_scan para traer nuevas.';
-  }
-
-  const total = await db.select({ count: sql<number>`count(*)` }).from(jobs);
-  const payload = {
-    totalOfertasEnBase: total[0]?.count ?? rows.length,
-    mostrando: rows.length,
-    ofertas: rows.map((r) => ({
-      ...r,
-      puntaje: r.puntaje !== null ? Math.round(r.puntaje) : null,
-      descripcion: r.descripcion
-        ? r.descripcion.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300)
-        : null,
-    })),
-    nota: 'El puntaje (0-100) es el fit con tu perfil calculado por el LLM. El sueldo solo aparece si la plataforma lo publica en la descripción.',
-  };
-  return truncate(JSON.stringify(payload, null, 1));
+  return rows.map((r) => ({ ...r, score: r.score === null ? null : Math.round(r.score), status: r.score === null ? 'recent' : 'matched' }));
 }
 
-async function toolListApplications(args: Record<string, unknown>): Promise<string> {
+async function toolListApplications(args: Record<string, unknown>): Promise<unknown[]> {
+  const profileId = await getProfileId();
+  if (profileId === null) return [];
   const conditions = [];
   if (typeof args.status === 'string' && args.status.trim() !== '') {
     conditions.push(eq(applications.status, args.status.trim() as 'draft'));
   }
   const rows = await db
     .select({
-      titulo: jobs.title,
-      empresa: jobs.company,
-      plataforma: platforms.displayName,
-      estado: applications.status,
-      preparada: applications.preparedAt,
-      enviada: applications.submittedAt,
-      creada: applications.createdAt,
+      title: jobs.title, company: jobs.company, platform: platforms.displayName, status: applications.status,
+      preparedAt: applications.preparedAt, submittedAt: applications.submittedAt, createdAt: applications.createdAt,
     })
     .from(applications)
     .innerJoin(jobs, eq(applications.jobId, jobs.id))
     .innerJoin(platforms, eq(jobs.platformId, platforms.id))
-    .where(conditions.length > 0 ? and(...conditions) : undefined)
-    .orderBy(desc(applications.createdAt))
-    .limit(clampLimit(args.limit) || 20);
-
-  if (rows.length === 0) return 'Todavía no hay postulaciones registradas.';
-  return truncate(JSON.stringify({ postulaciones: rows }, null, 1));
+    .where(and(eq(applications.profileId, profileId), ...conditions))
+    .orderBy(desc(applications.createdAt), desc(applications.id))
+    .limit(clampLimit(args.limit));
+  return rows;
 }
 
-async function toolListPlatforms(): Promise<string> {
+async function toolListPlatforms(args: Record<string, unknown>): Promise<unknown[]> {
+  if (await getProfileId() === null) return [];
   const rows = await db
     .select({
-      id: platforms.id,
-      slug: platforms.slug,
-      nombre: platforms.displayName,
-      estado: platforms.status,
+      id: platforms.id, slug: platforms.slug, name: platforms.displayName, status: platforms.status,
     })
     .from(platforms)
-    .orderBy(platforms.slug);
+    .orderBy(platforms.slug).limit(clampLimit(args.limit));
 
   const counts = await db
     .select({
@@ -219,20 +273,7 @@ async function toolListPlatforms(): Promise<string> {
     .groupBy(jobs.platformId);
   const byPlatform = new Map(counts.map((c) => [c.platformId, c]));
 
-  const payload = {
-    busquedaAutomatica: await currentScanConfig(),
-    plataformas: rows.map((r) => {
-      const c = byPlatform.get(r.id);
-      return {
-        slug: r.slug,
-        nombre: r.nombre,
-        estado: r.estado,
-        ofertas: Number(c?.n ?? 0),
-        ultimaOferta: c?.ultimaOferta ?? null,
-      };
-    }),
-  };
-  return truncate(JSON.stringify(payload, null, 1));
+  return rows.map(({ id, ...r }) => ({ ...r, capability: 'job-search', jobs: Number(byPlatform.get(id)?.n ?? 0), lastScanAt: byPlatform.get(id)?.ultimaOferta ?? null }));
 }
 
 async function currentScanConfig(): Promise<{ cadaMinutos: number; activa: boolean }> {
@@ -243,24 +284,43 @@ async function currentScanConfig(): Promise<{ cadaMinutos: number; activa: boole
     : { cadaMinutos: 30, activa: true };
 }
 
-async function toolGetErrors(args: Record<string, unknown>): Promise<string> {
+async function toolListPlatformSkills(args: Record<string, unknown>): Promise<unknown[]> {
+  if (await getProfileId() === null) return [];
+  const rows = await db.select({ name: platformSkills.skillSlug, platform: platforms.slug, platformName: platforms.displayName, lastSuccessAt: platformSkills.lastSuccessAt, consecutiveFailures: platformSkills.consecutiveFailures })
+    .from(platformSkills).leftJoin(platforms, eq(platforms.id, platformSkills.platformId)).orderBy(asc(platformSkills.skillSlug), asc(platformSkills.id)).limit(clampLimit(args.limit));
+  return Promise.all(rows.map(async (row) => {
+    const health = (await db.select({ status: skillHealthchecks.status, checkedAt: skillHealthchecks.checkedAt }).from(skillHealthchecks)
+      .where(eq(skillHealthchecks.skillSlug, row.name)).orderBy(desc(skillHealthchecks.checkedAt), desc(skillHealthchecks.id)).limit(1))[0];
+    return { ...row, capabilities: ['scan_jobs'], health: health?.status ?? 'unknown', healthCheckedAt: health?.checkedAt ?? null };
+  }));
+}
+
+async function toolListActivity(args: Record<string, unknown>): Promise<unknown[]> {
+  if (await getProfileId() === null) return [];
+  const rows = await db.select({ type: applicationEvents.kind, message: applicationEvents.message, timestamp: applicationEvents.occurredAt })
+    .from(applicationEvents).orderBy(desc(applicationEvents.id)).limit(clampLimit(args.limit));
+  return rows;
+}
+
+async function toolGetErrors(args: Record<string, unknown>): Promise<unknown[]> {
+  if (await getProfileId() === null) return [];
   const limit = clampLimit(args.limit);
   const [failedRuns, failures, unhealthy] = await Promise.all([
     db
       .select({ kind: agentRuns.kind, resumen: agentRuns.summary, cuando: agentRuns.startedAt })
       .from(agentRuns)
       .where(eq(agentRuns.status, 'failed'))
-      .orderBy(desc(agentRuns.startedAt))
+      .orderBy(desc(agentRuns.startedAt), desc(agentRuns.id))
       .limit(limit),
     db
       .select({
         skill: skillFailures.skillSlug,
         codigo: skillFailures.errorCode,
-        mensaje: skillFailures.errorMessage,
-        cuando: skillFailures.occurredAt,
+        mensaje: skillFailures.errorMessage, cuando: skillFailures.occurredAt,
+        reparado: skillFailures.repairedAt, reparacion: skillFailures.repairStrategy,
       })
       .from(skillFailures)
-      .orderBy(desc(skillFailures.occurredAt))
+      .orderBy(desc(skillFailures.occurredAt), desc(skillFailures.id))
       .limit(limit),
     db
       .select({
@@ -270,18 +330,15 @@ async function toolGetErrors(args: Record<string, unknown>): Promise<string> {
       })
       .from(skillHealthchecks)
       .where(sql`${skillHealthchecks.status} != 'healthy'`)
-      .orderBy(desc(skillHealthchecks.checkedAt))
+      .orderBy(desc(skillHealthchecks.checkedAt), desc(skillHealthchecks.id))
       .limit(limit),
   ]);
 
-  if (failedRuns.length === 0 && failures.length === 0 && unhealthy.length === 0) {
-    return 'No hay errores recientes registrados: ni corridas fallidas, ni fallos de skills, ni healthchecks con problemas.';
-  }
-  return truncate(JSON.stringify({
-    corridasFallidas: failedRuns,
-    fallosDeSkills: failures,
-    skillsConProblemas: unhealthy,
-  }, null, 1));
+  return [
+    ...failedRuns.map((r) => ({ type: 'agent_run', ...r })),
+    ...failures.map((r) => ({ type: 'skill_failure', ...r })),
+    ...unhealthy.map((r) => ({ type: 'health', ...r })),
+  ].sort((a, b) => String(b.cuando).localeCompare(String(a.cuando))).slice(0, limit);
 }
 
 /** Derive a URL-safe slug from a platform URL: "https://www.chiletrabajos.cl/empleos" → "chiletrabajos", "https://cl.indeed.com" → "indeed". */
@@ -392,22 +449,34 @@ async function toolSetAutoScan(args: Record<string, unknown>): Promise<string> {
     : 'Búsqueda automática DESACTIVADA. Los scans manuales (trigger_scan) siguen disponibles.';
 }
 
-/** Execute a parsed tool call against the local database. Never throws. */
-export async function executeTool(call: ToolCall, context: { approvedOrigins?: ReadonlySet<string> } = {}): Promise<string> {
+type ReadSource = (args: Record<string, unknown>) => Promise<unknown[]>;
+
+/** Execute a parsed tool call against explicit local services. Never throws. */
+export async function executeTool(call: ToolCall, context: { approvedOrigins?: ReadonlySet<string>; readSources?: Partial<Record<ReadToolName, ReadSource>> } = {}): Promise<string> {
   try {
+    if (READ_TOOLS.has(call.tool as ReadToolName)) {
+      const tool = call.tool as ReadToolName;
+      const source = context.readSources?.[tool];
+      const data = source ? await source(call.args) : await ({
+        get_profile_summary: toolGetProfileSummary,
+        list_cv_documents: toolListCvDocuments,
+        list_jobs: toolListJobs,
+        list_applications: toolListApplications,
+        list_platforms: toolListPlatforms,
+        list_platform_skills: toolListPlatformSkills,
+        list_activity: toolListActivity,
+        get_errors: toolGetErrors,
+      } satisfies Record<ReadToolName, ReadSource>)[tool](call.args);
+      return formatReadResult(tool, data, call.args.limit);
+    }
     switch (call.tool) {
-      case 'list_jobs': return await toolListJobs(call.args);
-      case 'list_applications': return await toolListApplications(call.args);
-      case 'list_platforms': return await toolListPlatforms();
-      case 'get_errors': return await toolGetErrors(call.args);
       case 'trigger_scan': return await toolTriggerScan(call.args);
       case 'set_auto_scan': return await toolSetAutoScan(call.args);
       case 'add_platform': return await toolAddPlatform(call.args, context.approvedOrigins ?? new Set());
       default: return `Error: herramienta desconocida "${call.tool}".`;
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return `Error ejecutando ${call.tool}: ${message}`;
+    return `Error ejecutando ${call.tool}.`;
   }
 }
 
@@ -417,20 +486,28 @@ export async function executeTool(call: ToolCall, context: { approvedOrigins?: R
  */
 export const TOOLS_PROMPT = `## Herramientas del agente (datos en vivo de la app)
 
-Tenés acceso a los datos reales de la app: ofertas, postulaciones, plataformas y errores. Cuando necesites datos o ejecutar una acción, respondé ÚNICAMENTE con una línea HERRAMIENTA: seguida de un JSON, sin texto antes ni después:
+Tenés acceso seguro y de solo lectura al perfil resumido, CVs, ofertas, postulaciones, plataformas, skills, actividad y errores. Cuando necesites datos o ejecutar una acción explícita, respondé ÚNICAMENTE con una línea HERRAMIENTA: seguida de un JSON, sin texto antes ni después:
 
 HERRAMIENTA: {"tool": "<nombre>", "args": {...}}
 
 Herramientas disponibles:
 
+- get_profile_summary — Resumen, ubicación/alcance, cargos objetivo, experiencia y skills del candidato. Usala para consejos basados en el perfil; no devuelve contacto ni CV crudo.
+
+- list_cv_documents — Metadatos seguros de CVs cargados (tipo, fecha y estado), nunca contenido o rutas. args opcionales: limit.
+
 - list_jobs — Lista ofertas reales scrapeadas, ordenadas por fit con tu perfil.
-  args opcionales: platform (slug, ej "computrabajo"), query (texto en el título), minScore (número), limit (máx 25, default 10).
+  args opcionales: platform (slug, ej "computrabajo"), query (texto en el título), minScore (número), limit (máx 50, default 10).
   Usala para: "revisá las ofertas", "qué hay de mantención", "las mejores puntuadas", "cuál tiene mejor sueldo" (el sueldo aparece solo si la descripción lo publica).
 
 - list_applications — Estado de las postulaciones (draft, ready, submitted, failed, rejected).
   args opcionales: status, limit.
 
-- list_platforms — Plataformas conectadas, su estado, cuántas ofertas tiene cada una y la config de búsqueda automática.
+- list_platforms — Plataformas conectadas, capacidad, estado, cantidad de ofertas y último escaneo. args opcionales: limit.
+
+- list_platform_skills — Skills determinísticas instaladas, plataforma, capacidades y salud. Usala para saber qué conectores están operativos; no devuelve código, rutas ni entorno. args opcionales: limit.
+
+- list_activity — Eventos recientes del agente en orden determinístico. Usala para explicar qué hizo recientemente; no inicia acciones ni reproduce el stream. args opcionales: limit.
 
 - get_errors — Corridas fallidas del agente, fallos de skills de scraping y healthchecks con problemas.
   args opcionales: limit.
@@ -453,4 +530,5 @@ Reglas de las herramientas:
 - Después de llamar una herramienta recibís el resultado y respondés al usuario en prosa normal, interpretando los datos.
 - Si el usuario pide una ACCIÓN (escanear, activar, desactivar), ejecutala con la herramienta y después confirmale qué hiciste.
 - NUNCA muestres el JSON crudo del resultado al usuario: resumilo en lenguaje natural.
+- Todas las lecturas son acotadas y redactadas. No pidas archivos, SQL, shell, navegador ni payloads internos.
 - Si una acción es destructiva o ambigua (ej: desactivar algo), confirmala solo si el usuario lo pidió claramente; si no, preguntá primero.`;
