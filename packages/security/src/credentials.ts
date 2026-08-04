@@ -116,13 +116,43 @@ export async function recordLoginStatus(slug: string, status: LoginStatus): Prom
     .where(eq(platformCredentials.slug, slug));
 }
 
+/**
+ * The capture flow has no email/password (the user logged in via
+ * OAuth or 2FA). We need placeholder values so the row can be inserted
+ * with the existing schema (emailCipher and passwordCipher are NOT NULL).
+ * The placeholder email encodes the slug so the user can tell which row
+ * corresponds to which platform; the placeholder password is opaque.
+ * The actual credential is the storage state — the agent never uses
+ * the placeholder email/password.
+ */
+function capturePlaceholders(slug: string, key: Buffer): { emailCipher: string; passwordCipher: string } {
+  return {
+    emailCipher: encrypt(`capture+${slug}@placeholder.local`, key),
+    passwordCipher: encrypt(`capture-placeholder-${slug}`, key),
+  };
+}
+
 export async function persistStorageState(slug: string, storageState: string): Promise<void> {
   const key = await getOrCreateMasterKey();
   const storageStateCipher = encrypt(storageState, key);
+  const ph = capturePlaceholders(slug, key);
   const now = new Date().toISOString();
-  await db.update(platformCredentials)
-    .set({ storageStateCipher, updatedAt: now })
-    .where(eq(platformCredentials.slug, slug));
+  // Upsert: the capture flow usually creates a row that didn't exist
+  // before (no email/password was ever saved). INSERT OR REPLACE so the
+  // row is created if missing, updated if it exists.
+  await db.insert(platformCredentials)
+    .values({
+      slug,
+      storageStateCipher,
+      emailCipher: ph.emailCipher,
+      passwordCipher: ph.passwordCipher,
+      consentAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: platformCredentials.slug,
+      set: { storageStateCipher, updatedAt: now },
+    });
 }
 
 /**
@@ -138,8 +168,22 @@ export async function persistBrowserProfile(
   browserPath: string,
   profilePath: string,
 ): Promise<void> {
+  const key = await getOrCreateMasterKey();
+  const ph = capturePlaceholders(slug, key);
   const now = new Date().toISOString();
-  await db.update(platformCredentials)
-    .set({ browserId, browserPath, profilePath, updatedAt: now })
-    .where(eq(platformCredentials.slug, slug));
+  await db.insert(platformCredentials)
+    .values({
+      slug,
+      browserId,
+      browserPath,
+      profilePath,
+      emailCipher: ph.emailCipher,
+      passwordCipher: ph.passwordCipher,
+      consentAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: platformCredentials.slug,
+      set: { browserId, browserPath, profilePath, updatedAt: now },
+    });
 }
