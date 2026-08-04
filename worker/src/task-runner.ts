@@ -26,12 +26,18 @@ async function loadLLM(): Promise<LLMProvider> {
 }
 
 /** Ensure a platform row exists and return its id. */
-async function ensurePlatform(slug: string, displayName: string): Promise<number> {
+async function ensurePlatform(slug: string, displayName: string, baseUrl?: string): Promise<number> {
   const existing = await db.select().from(platforms).where(eq(platforms.slug, slug)).limit(1);
-  if (existing[0]) return existing[0].id;
+  if (existing[0]) {
+    // Backfill baseUrl on rows created before we started storing it.
+    if (baseUrl && !existing[0].baseUrl) {
+      await db.update(platforms).set({ baseUrl }).where(eq(platforms.id, existing[0].id));
+    }
+    return existing[0].id;
+  }
   const inserted = await db
     .insert(platforms)
-    .values({ slug, displayName, status: 'active' })
+    .values({ slug, displayName, status: 'active', baseUrl: baseUrl ?? null })
     .returning({ id: platforms.id });
   return inserted[0]!.id;
 }
@@ -490,7 +496,8 @@ export function registerBuiltinHandlers(): void {
       throw new Error(`Skill not found: ${payload.skillSlug}`);
     }
     const profile = await loadWorkerProfile();
-    const platformId = await ensurePlatform(skill.slug, skill.displayName);
+    const { platformUrlForSlug } = await import('./platform-urls.js');
+    const platformId = await ensurePlatform(skill.slug, skill.displayName, platformUrlForSlug(skill.slug));
 
     // Wrap the event emitter to intercept job_found events and persist them.
     let newCount = 0;
@@ -549,14 +556,12 @@ export function registerBuiltinHandlers(): void {
         payload: { skillSlug: skill.slug, error: errMsg },
       });
       const { enqueueTask } = await import('./task-queue.js');
+      const { platformUrlForSlug } = await import('./platform-urls.js');
       await enqueueTask({
         type: 'BROWSER_AGENT_SCAN',
         payload: {
           skillSlug: skill.slug,
-          platformUrl: skill.slug === 'laborum' ? 'https://www.laborum.cl'
-            : skill.slug === 'computrabajo' ? 'https://www.computrabajo.cl'
-            : skill.slug === 'indeed' ? 'https://cl.indeed.com'
-            : `https://www.${skill.slug}.cl`,
+          platformUrl: platformUrlForSlug(skill.slug),
           triggeredBy: 'skill-fallback',
           originalError: errMsg.slice(0, 200),
         },
