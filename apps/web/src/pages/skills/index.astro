@@ -1,18 +1,69 @@
 ---
 import Base from '../../layouts/Base.astro';
+import Badge from '../../components/ui/Badge.astro';
+import {
+  getBrowserEngineInfo,
+  getProductionSkills,
+  type CatalogSkill,
+  type BrowserEngineInfo,
+} from '../../lib/skills-catalog';
+
+let skills: CatalogSkill[] = getProductionSkills();
+let browser: BrowserEngineInfo = getBrowserEngineInfo();
+let fetchWarning: string | null = null;
+
+try {
+  const response = await fetch(new URL('/api/skills', Astro.url));
+  if (response.ok) {
+    const data = (await response.json()) as { skills: CatalogSkill[]; browser: BrowserEngineInfo };
+    if (Array.isArray(data.skills) && data.skills.length > 0) {
+      skills = data.skills;
+    }
+    if (data.browser) {
+      browser = data.browser;
+    }
+  } else {
+    fetchWarning = `API responded ${response.status}; using local catalog.`;
+  }
+} catch (err) {
+  fetchWarning = `Fallo al consultar /api/skills (${err instanceof Error ? err.message : String(err)}); usando catálogo local.`;
+}
 ---
 <Base title="Skills" activeRoute="/skills">
-  <h2 class="text-2xl font-semibold mb-4">Skills</h2>
-  <p class="text-muted">Habilidades del agente para operar cada portal.</p>
-  <div class="mt-6 space-y-2">
-    <div class="rounded border border-border p-4">
-      <div class="flex items-center justify-between">
-        <div>
-          <h3 class="font-semibold">example-platform</h3>
-          <p class="text-sm text-muted">Versión 0.1.0 — Plataforma de ejemplo (stub)</p>
-        </div>
-        <span class="rounded bg-green-500/20 text-green-400 px-2 py-1 text-xs">Saludable</span>
-      </div>
-    </div>
+  <h2 class="text-2xl font-semibold mb-2">Skills</h2>
+  <p class="text-muted mb-6">Habilidades determinísticas del agente. Cada skill corresponde a un scraper registrado en el worker.</p>
+
+  {fetchWarning && (
+    <p class="mb-4 rounded border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
+      {fetchWarning}
+    </p>
+  )}
+
+  <div class="space-y-3">
+    {skills.map((skill) => (
+      <article class="rounded border border-border bg-background/40 p-4">
+        <header class="flex items-start justify-between gap-3">
+          <div>
+            <h3 class="font-semibold text-foreground">{skill.displayName}</h3>
+            <p class="text-xs text-muted">v{skill.version} · <code class="text-accent">{skill.slug}</code></p>
+          </div>
+          <Badge variant={skill.source === 'production' ? 'accent' : 'neutral'}>
+            {skill.source === 'production' ? 'Producción' : 'Ejemplo'}
+          </Badge>
+        </header>
+        <ul class="mt-3 flex flex-wrap gap-2 text-xs">
+          {skill.capabilities.canScan && <Badge variant="success">scan</Badge>}
+          {skill.capabilities.canApply && <Badge variant="success">apply</Badge>}
+          {skill.capabilities.canDetectLoggedOut && <Badge variant="success">detecta sesión cerrada</Badge>}
+          {!skill.capabilities.canScan && !skill.capabilities.canApply && (
+            <Badge variant="neutral">sin capacidades activas</Badge>
+          )}
+        </ul>
+      </article>
+    ))}
   </div>
+
+  <aside class="mt-6 rounded border border-border/50 bg-background/20 p-3 text-xs text-muted">
+    <strong class="text-foreground">Browser engine:</strong> {browser.message}
+  </aside>
 </Base>
