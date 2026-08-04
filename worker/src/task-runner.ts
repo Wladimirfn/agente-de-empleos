@@ -296,16 +296,15 @@ export function registerBuiltinHandlers(): void {
         viewport: { width: 1280, height: 900 },
       });
       // Block navigation outside the approved origin while the user is
-      // logging in. This is the same network-boundary as the browser-agent
-      // so the user can't accidentally end up on a phishing page.
+      // logging in. We DO allow the well-known OAuth providers here
+      // (Google, Apple, Facebook, Microsoft, GitHub) because platforms
+      // like Indeed require the user to complete the OAuth flow inside
+      // the headed browser. The whitelist is intentionally narrow — see
+      // OAUTH_ALLOWED_ORIGINS in session-capture-policy.ts.
+      const { shouldAllowNavigation } = await import('./session-capture-policy.js');
       await context.route('**/*', async (route) => {
         const url = route.request().url();
-        try {
-          if (!isApprovedOrigin(url, approvedOrigin)) {
-            await route.abort('blockedbyclient');
-            return;
-          }
-        } catch {
+        if (!shouldAllowNavigation(url, approvedOrigin)) {
           await route.abort('blockedbyclient');
           return;
         }
