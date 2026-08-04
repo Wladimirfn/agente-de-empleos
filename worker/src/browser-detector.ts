@@ -96,3 +96,38 @@ export function findBrowser(id: BrowserId): BrowserInfo | null {
   const browsers = detectAvailableBrowsers();
   return browsers.find((b) => b.id === id) ?? null;
 }
+
+/**
+ * Default profile directory for the given browser. This is the
+ * user-data-dir the browser uses when launched normally (no flags).
+ * Returning it lets the agent open the user's existing browser with
+ * all their cookies and settings intact — so secure.indeed.com is
+ * allowed by Brave's shields, Google trusts the session, and the user
+ * doesn't need to log in again.
+ *
+ * Returns null if the OS isn't handled (e.g. FreeBSD).
+ */
+export function defaultProfileDir(browserId: BrowserId): string | null {
+  const os = platform();
+  if (os === 'win32') {
+    const localAppData = process.env['LOCALAPPDATA'] ?? '';
+    if (browserId === 'brave') return join(localAppData, 'BraveSoftware', 'Brave-Browser', 'User Data');
+    if (browserId === 'chrome') return join(localAppData, 'Google', 'Chrome', 'User Data');
+    if (browserId === 'edge') return join(localAppData, 'Microsoft', 'Edge', 'User Data');
+    if (browserId === 'comet') return join(localAppData, 'Perplexity', 'Comet', 'User Data');
+    return null;
+  }
+  if (os === 'darwin') {
+    const home = process.env['HOME'] ?? '';
+    if (browserId === 'brave') return join(home, 'Library', 'Application Support', 'BraveSoftware', 'Brave-Browser');
+    if (browserId === 'chrome') return join(home, 'Library', 'Application Support', 'Google', 'Chrome');
+    if (browserId === 'edge') return join(home, 'Library', 'Application Support', 'Microsoft Edge');
+    return null;
+  }
+  // Linux
+  const home = process.env['HOME'] ?? '';
+  if (browserId === 'brave') return join(home, '.config', 'BraveSoftware', 'Brave-Browser');
+  if (browserId === 'chrome') return join(home, '.config', 'google-chrome');
+  if (browserId === 'edge') return join(home, '.config', 'microsoft-edge');
+  return null;
+}

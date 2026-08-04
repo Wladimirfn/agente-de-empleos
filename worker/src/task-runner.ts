@@ -278,8 +278,8 @@ export function registerBuiltinHandlers(): void {
       const payload = JSON.parse(task.payloadJson) as { sessionId: string; slug: string; platformUrl: string };
       const { getSessionCapture, setSessionReady, setSessionCompleted, setSessionFailed, setSessionExpired, persistStorageState, persistBrowserProfile } = await import('@employment-agent/security');
       const { chromium } = await import('playwright');
-      const { detectAvailableBrowsers, pickDefaultBrowser } = await import('./browser-detector.js');
-      const { launchBrowser, profileDirFor, PROFILES_ROOT } = await import('./browser-launcher.js');
+      const { detectAvailableBrowsers, pickDefaultBrowser, defaultProfileDir } = await import('./browser-detector.js');
+      const { launchBrowser, connectToBrowser, profileDirFor } = await import('./browser-launcher.js');
 
       const session = await getSessionCapture(payload.sessionId);
       if (!session) {
@@ -289,8 +289,6 @@ export function registerBuiltinHandlers(): void {
 
       // Pick a real browser (Brave → Chrome → Edge → Comet). Real binary
       // = real TLS fingerprint = Google doesn't block the OAuth flow.
-      // We fall back to Playwright's bundled Chromium if nothing's
-      // installed; the user gets a clear error message about which.
       const browser = pickDefaultBrowser();
       if (!browser) {
         const available = detectAvailableBrowsers();
@@ -299,25 +297,51 @@ export function registerBuiltinHandlers(): void {
         );
       }
 
-      const profileDir = profileDirFor(payload.slug, browser.id);
-      let browserProc: import('node:child_process').ChildProcess | null = null;
+      // Prefer the user's existing browser instance (already running with
+      // their cookies and Brave shield settings — secure.indeed.com is
+      // already allowed there). Fall back to the user's profile dir if
+      // no browser is running with CDP. Last resort: a dedicated profile.
       let launchedBrowser: import('playwright').Browser | null = null;
-      try {
-        const launched = await launchBrowser({
-          browserId: browser.id,
-          binaryPath: browser.binaryPath,
-          profileDir,
-        });
-        browserProc = launched.process;
+      let launchedProcess: import('node:child_process').ChildProcess | null = null;
+      let profileDir: string;
+      let usedExistingBrowser = false;
 
-        launchedBrowser = await chromium.connectOverCDP(`http://127.0.0.1:${launched.cdpPort}`);
+      try {
+        launchedBrowser = await connectToBrowser();
+        if (launchedBrowser) {
+          usedExistingBrowser = true;
+          // We don't know the exact profile dir of the running browser
+          // without querying CDP. The default profile is the common case.
+          profileDir = defaultProfileDir(browser.id) ?? profileDirFor(payload.slug, browser.id);
+          await events.emit({
+            kind: 'session_capture_attached',
+            message: `Conectado a ${browser.id} ya abierto. Tus cookies y configuración están disponibles.`,
+            payload: { browser: browser.id, slug: payload.slug },
+          });
+        } else {
+          // No existing browser. Use the user's default profile if
+          // available (so they keep their cookies and shield settings).
+          const userProfile = defaultProfileDir(browser.id);
+          profileDir = userProfile ?? profileDirFor(payload.slug, browser.id);
+          const launched = await launchBrowser({
+            browserId: browser.id,
+            binaryPath: browser.binaryPath,
+            profileDir,
+          });
+          launchedProcess = launched.process;
+          launchedBrowser = await chromium.connectOverCDP(`http://127.0.0.1:${launched.cdpPort}`);
+          await events.emit({
+            kind: 'session_capture_launched',
+            message: `Lanzado ${browser.id} con tu perfil existente.`,
+            payload: { browser: browser.id, slug: payload.slug, profileDir },
+          });
+        }
+
         const context = launchedBrowser.contexts()[0] ?? await launchedBrowser.newContext();
 
-        // Reuse the existing page if Chrome opened with one (real Chrome
-        // gives us a default tab). If the context is empty for some reason,
-        // create a new page. Without this, calling newPage() always opens
-        // a NEW tab behind the user's visible one, so they'd see whatever
-        // page Chrome happened to launch with instead of the platform.
+        // Reuse the existing page if Chrome opened with one. If empty,
+        // create a new page. Without this, newPage() always opens a NEW
+        // tab behind the user's visible one.
         const pages = context.pages();
         const page = pages[0] ?? await context.newPage();
 
@@ -341,8 +365,8 @@ export function registerBuiltinHandlers(): void {
 
         await events.emit({
           kind: 'session_capture_ready',
-          message: `Navegador ${browser.id} abierto en ${approvedOrigin}. Loguéate y tocá "Listo" cuando termines.`,
-          payload: { sessionId: payload.sessionId, slug: payload.slug, browser: browser.id },
+          message: `Navegador ${browser.id} en ${approvedOrigin}. Loguéate y tocá "Listo" cuando termines.`,
+          payload: { sessionId: payload.sessionId, slug: payload.slug, browser: browser.id, usedExistingBrowser },
         });
         await setSessionReady(payload.sessionId);
 
@@ -365,7 +389,7 @@ export function registerBuiltinHandlers(): void {
             await setSessionCompleted(payload.sessionId);
             await events.emit({
               kind: 'session_capture_completed',
-              message: `Sesión de ${payload.slug} guardada (${browser.id} + perfil persistente).`,
+              message: `Sesión de ${payload.slug} guardada (${browser.id}).`,
               payload: { slug: payload.slug, browser: browser.id, profileDir: profileDir.replace(process.cwd(), '') },
             });
             return;
@@ -393,13 +417,11 @@ export function registerBuiltinHandlers(): void {
         });
         throw err;
       } finally {
-        // Close the Playwright connection (does NOT close the browser —
-        // the user keeps their session in the profile dir).
+        // Close the Playwright connection. If we attached to the user's
+        // existing browser, do NOT close it — they keep using it. If we
+        // launched a new one, also leave it running so the user keeps
+        // their session.
         if (launchedBrowser) await launchedBrowser.close().catch(() => undefined);
-        // We deliberately leave browserProc running so the user can
-        // continue using the browser after capture completes. It'll
-        // be cleaned up the next time the agent launches with the same
-        // profile (Playwright connectOverCDP attaches to the running one).
       }
     };
   registerHandler('CAPTURE_SESSION', captureSession);

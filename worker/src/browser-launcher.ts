@@ -56,6 +56,22 @@ export interface LaunchOptions {
 }
 
 /**
+ * Browser-specific flags. Brave's shield blocks secure.indeed.com by
+ * default; we disable it on launch so the agent can reach the login
+ * page. Chrome and Edge don't need this — their shield is off by
+ * default for sites the user has visited.
+ */
+export function browserSpecificFlags(browserId: BrowserId): string[] {
+  if (browserId === 'brave') {
+    return [
+      '--disable-brave-shields',
+      '--disable-features=BraveShields,BraveShieldsEnabled,BraveAdBlock',
+    ];
+  }
+  return [];
+}
+
+/**
  * Spawns a real browser with --remote-debugging-port and a dedicated
  * user-data-dir. Returns the child process so the caller can kill it
  * on cancel. The browser is launched detached: it survives the agent
@@ -71,6 +87,7 @@ export async function launchBrowser(opts: LaunchOptions): Promise<{ process: Chi
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-blink-features=AutomationControlled',
+    ...browserSpecificFlags(opts.browserId),
   ];
   const process = spawn(opts.binaryPath, args, {
     detached: true,
