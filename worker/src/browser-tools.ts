@@ -69,12 +69,27 @@ export function hasUrlCredentials(url: string): boolean {
 
 export function sanitizeOutbound<T>(value: T, depth = 0): T {
   if (depth > 8) return '[redacted]' as T;
-  if (typeof value === 'string') return (/^(?:[a-z][a-z\d+.-]*:\/\/|about:|data:|javascript:)\S*$/i.test(value) ? sanitizeUrl(value) : value.replace(/https?:\/\/[^\s<>"']+/gi, (url) => sanitizeUrl(url))).slice(0, MAX_TEXT_LENGTH) as T;
+  if (typeof value === 'string') return sanitizeOutboundString(value).slice(0, MAX_TEXT_LENGTH) as T;
   if (Array.isArray(value)) return value.slice(0, 100).map((item) => sanitizeOutbound(item, depth + 1)) as T;
   if (value && typeof value === 'object') return Object.fromEntries(new Map(
     Object.entries(value).slice(0, 100).map(([key, item]) => [sanitizeUrlsInText(key), sanitizeOutbound(item, depth + 1)]),
   )) as T;
   return value;
+}
+
+function sanitizeOutboundString(text: string): string {
+  let out = text;
+  // 1. Labeled form: capture the label (case-insensitive), then the exact
+  //    16-hex body, then the optional region suffix (`-XX` or `XXX`).
+  //    The label is preserved in the output; the body and region are redacted.
+  out = out.replace(
+    /(cf-ray[:=]\s+|cf-mitigated[:=]?\s+|cloudflare(?:\s+ray)?\s*id[:=]?\s+|ray\s*id[:=]?\s+)([0-9a-f]{16})(?:[-]?[A-Z]{2,3})?/gi,
+    (_match, label: string) => label + '<cf-ray>',
+  );
+  // 2. Bare Ray IDs without a label. Allow both upper and lower case hex.
+  out = out.replace(/(?<![0-9a-fA-F])([0-9a-fA-F]{16,24})(?![0-9a-fA-F])/g, '<cf-ray>');
+  if (/^(?:[a-z][a-z\d+.-]*:\/\/|about:|data:|javascript:)\S*$/i.test(out)) return sanitizeUrl(out);
+  return out.replace(/https?:\/\/[^\s<>"']+/gi, (url) => sanitizeUrl(url));
 }
 
 export function sanitizeUrlsInText(text: string): string { return sanitizeOutbound(text); }
