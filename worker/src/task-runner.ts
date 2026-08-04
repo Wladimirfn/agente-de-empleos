@@ -303,7 +303,7 @@ export function registerBuiltinHandlers(): void {
       // already allowed there). Fall back to the user's profile dir if
       // no browser is running with CDP. Last resort: a dedicated profile.
       let launchedBrowser: import('playwright').Browser | null = null;
-      let launchedProcess: import('node:child_process').ChildProcess | null = null;
+      let launchedProcess: { pid: number; cdpPort: number } | null = null;
       let profileDir: string;
       let usedExistingBrowser = false;
 
@@ -329,7 +329,7 @@ export function registerBuiltinHandlers(): void {
             binaryPath: browser.binaryPath,
             profileDir,
           });
-          launchedProcess = launched.process;
+          launchedProcess = launched;
           launchedBrowser = await chromium.connectOverCDP(`http://127.0.0.1:${launched.cdpPort}`);
           await events.emit({
             kind: 'session_capture_launched',
@@ -606,7 +606,7 @@ export function registerBuiltinHandlers(): void {
     // without prompting for credentials or hitting Google's automation
     // detectors. Falls back to Playwright Chromium if no profile exists.
     let realBrowser: import('playwright').Browser | null = null;
-    let browserProc: import('node:child_process').ChildProcess | null = null;
+    let browserProc: { pid: number; cdpPort: number } | null = null;
     if (credential?.browserPath && credential?.profilePath) {
       const browser = findBrowser(credential.browserId as Parameters<typeof findBrowser>[0] ?? null);
       if (browser) {
@@ -620,7 +620,7 @@ export function registerBuiltinHandlers(): void {
               binaryPath: credential.browserPath,
               profileDir: credential.profilePath,
             });
-            browserProc = launched.process;
+            browserProc = launched;
             realBrowser = await chromium.connectOverCDP(`http://127.0.0.1:${launched.cdpPort}`);
           }
           await events.emit({

@@ -1,8 +1,13 @@
-import { spawn, type ChildProcess } from 'node:child_process';
-import { promises as fs, existsSync } from 'node:fs';
+import { exec } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import { chromium, type Browser, type BrowserContext } from 'playwright';
 import type { BrowserId } from './browser-detector.js';
+
+const execAsync = promisify(exec);
 
 const DEFAULT_CDP_PORT = 9222;
 const PROBE_TIMEOUT_MS = 500;
@@ -72,42 +77,89 @@ export function browserSpecificFlags(browserId: BrowserId): string[] {
 }
 
 /**
- * Spawns a real browser with --remote-debugging-port and a dedicated
- * user-data-dir. Returns the child process so the caller can kill it
- * on cancel. The browser is launched detached: it survives the agent
- * crashing so the user can keep using it after the agent restarts.
+ * Launches Brave via PowerShell's Start-Process instead of Node's
+ * `spawn`. On Windows, `spawn` with `--remote-debugging-port` and
+ * `detached: true` has subtle issues — the browser process sometimes
+ * exits silently or the CDP endpoint never binds, even when the same
+ * arguments work via `Start-Process` directly. We use PowerShell here
+ * because that's what reliably works on Windows; on Mac/Linux we keep
+ * the `spawn` fallback.
+ *
+ * Returns the PID so the caller can check if the process is alive.
  */
-export async function launchBrowser(opts: LaunchOptions): Promise<{ process: ChildProcess; cdpPort: number }> {
+async function launchBrowserViaPowerShell(
+  binaryPath: string,
+  profileDir: string,
+  cdpPort: number,
+  extraFlags: string[],
+): Promise<number> {
+  const args = [
+    `--remote-debugging-port=${cdpPort}`,
+    `--user-data-dir=\`"${profileDir}\`"`,
+    ...extraFlags,
+  ];
+  const argList = args.map((a) => `"${a}"`).join(', ');
+  const script = [
+    `$ErrorActionPreference = 'Stop'`,
+    `$proc = Start-Process -FilePath "${binaryPath}" -ArgumentList ${argList} -WindowStyle Normal -PassThru`,
+    `Write-Output $proc.Id`,
+  ].join('\n');
+  const scriptPath = join(tmpdir(), `launch-brave-${process.pid}-${Date.now()}.ps1`);
+  await fs.writeFile(scriptPath, script, 'utf8');
+  try {
+    const { stdout, stderr } = await execAsync(
+      `powershell -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`,
+    );
+    const pid = parseInt(stdout.trim(), 10);
+    if (isNaN(pid)) {
+      throw new Error(`PowerShell did not return a PID. stdout=${stdout.trim()} stderr=${stderr.trim()}`);
+    }
+    return pid;
+  } finally {
+    await fs.unlink(scriptPath).catch(() => undefined);
+  }
+}
+
+/**
+ * Spawns a real browser with --remote-debugging-port and a dedicated
+ * user-data-dir. Returns the PID so the caller can check liveness.
+ *
+ * On Windows we use PowerShell's Start-Process (the same approach a
+ * user would take manually). On Mac/Linux we use Node's spawn.
+ */
+export async function launchBrowser(opts: LaunchOptions): Promise<{ pid: number; cdpPort: number }> {
   const profileDir = resolve(opts.profileDir);
   await fs.mkdir(profileDir, { recursive: true });
   const cdpPort = opts.cdpPort ?? await pickFreePort(DEFAULT_CDP_PORT);
-  const args = [
-    `--remote-debugging-port=${cdpPort}`,
-    `--user-data-dir=${profileDir}`,
+  const extraFlags = [
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-blink-features=AutomationControlled',
     ...browserSpecificFlags(opts.browserId),
   ];
-  // Capture stderr so we can surface a useful error if the browser
-  // refuses to launch (most common cause: profile is locked by an
-  // already-running Brave instance).
-  const childProcess = spawn(opts.binaryPath, args, {
-    detached: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: false,
-  });
-  childProcess.unref();
-  let stderr = '';
-  childProcess.stderr?.on('data', (data) => {
-    stderr += data.toString();
-  });
-  let exitCode: number | null = null;
-  let exitSignal: NodeJS.Signals | null = null;
-  childProcess.once('exit', (code, signal) => {
-    exitCode = code;
-    exitSignal = signal;
-  });
+
+  const isWindows = process.platform === 'win32';
+  let pid: number;
+  try {
+    if (isWindows) {
+      pid = await launchBrowserViaPowerShell(opts.binaryPath, profileDir, cdpPort, extraFlags);
+    } else {
+      // Mac / Linux: use Node's spawn. Same arg list, no PowerShell.
+      const { spawn } = await import('node:child_process');
+      const args = [
+        `--remote-debugging-port=${cdpPort}`,
+        `--user-data-dir=${profileDir}`,
+        ...extraFlags,
+      ];
+      const child = spawn(opts.binaryPath, args, { detached: true, stdio: 'ignore' });
+      child.unref();
+      pid = child.pid ?? -1;
+    }
+  } catch (err) {
+    throw new Error(
+      `Failed to launch ${opts.browserId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 
   // Wait for the CDP endpoint to be reachable. We try both 127.0.0.1
   // and localhost (Chrome on Windows may bind to IPv6 first). If the
@@ -115,20 +167,22 @@ export async function launchBrowser(opts: LaunchOptions): Promise<{ process: Chi
   // diagnostic so the user knows what went wrong.
   const deadline = Date.now() + LAUNCH_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    if (exitCode !== null || exitSignal !== null) {
-      const detail = stderr.trim() || '<empty>';
-      throw new Error(
-        `Browser exited before CDP came up (code=${exitCode}${exitSignal ? `, signal=${exitSignal}` : ''}). ` +
-        `stderr: ${detail}. ` +
-        `Most likely your existing Brave has the profile locked — close it first and try again.`
-      );
+    if (pid > 0) {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        // Process no longer alive. Common cause: profile locked.
+        throw new Error(
+          `Browser process (PID ${pid}) exited before CDP came up. ` +
+          `Most likely your existing Brave has the profile locked — close it first and try again.`
+        );
+      }
     }
-    if (await probeCDP(cdpPort)) return { process: childProcess, cdpPort };
+    if (await probeCDP(cdpPort)) return { pid, cdpPort };
     await new Promise((r) => setTimeout(r, 200));
   }
   throw new Error(
     `Browser CDP endpoint did not come up on port ${cdpPort} within ${LAUNCH_TIMEOUT_MS / 1000}s. ` +
-    `stderr: ${stderr.trim() || '<empty>'}. ` +
     `If your existing Brave is open, close it first.`
   );
 }
