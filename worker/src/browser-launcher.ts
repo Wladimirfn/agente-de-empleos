@@ -89,20 +89,48 @@ export async function launchBrowser(opts: LaunchOptions): Promise<{ process: Chi
     '--disable-blink-features=AutomationControlled',
     ...browserSpecificFlags(opts.browserId),
   ];
-  const process = spawn(opts.binaryPath, args, {
+  // Capture stderr so we can surface a useful error if the browser
+  // refuses to launch (most common cause: profile is locked by an
+  // already-running Brave instance).
+  const childProcess = spawn(opts.binaryPath, args, {
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: false,
   });
-  process.unref();
+  childProcess.unref();
+  let stderr = '';
+  childProcess.stderr?.on('data', (data) => {
+    stderr += data.toString();
+  });
+  let exitCode: number | null = null;
+  let exitSignal: NodeJS.Signals | null = null;
+  childProcess.once('exit', (code, signal) => {
+    exitCode = code;
+    exitSignal = signal;
+  });
+
   // Wait for the CDP endpoint to be reachable. We try both 127.0.0.1
-  // and localhost (Chrome on Windows may bind to IPv6 first).
+  // and localhost (Chrome on Windows may bind to IPv6 first). If the
+  // browser exits before CDP comes up, fail fast with a useful
+  // diagnostic so the user knows what went wrong.
   const deadline = Date.now() + LAUNCH_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    if (await probeCDP(cdpPort)) return { process, cdpPort };
+    if (exitCode !== null || exitSignal !== null) {
+      const detail = stderr.trim() || '<empty>';
+      throw new Error(
+        `Browser exited before CDP came up (code=${exitCode}${exitSignal ? `, signal=${exitSignal}` : ''}). ` +
+        `stderr: ${detail}. ` +
+        `Most likely your existing Brave has the profile locked — close it first and try again.`
+      );
+    }
+    if (await probeCDP(cdpPort)) return { process: childProcess, cdpPort };
     await new Promise((r) => setTimeout(r, 200));
   }
-  throw new Error(`Browser CDP endpoint did not come up on port ${cdpPort} within ${LAUNCH_TIMEOUT_MS / 1000}s`);
+  throw new Error(
+    `Browser CDP endpoint did not come up on port ${cdpPort} within ${LAUNCH_TIMEOUT_MS / 1000}s. ` +
+    `stderr: ${stderr.trim() || '<empty>'}. ` +
+    `If your existing Brave is open, close it first.`
+  );
 }
 
 /**

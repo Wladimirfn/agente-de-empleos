@@ -288,18 +288,24 @@ export default function CredentialsSection() {
           Abrimos un navegador para que te loguees manualmente (Google, Facebook, 2FA, lo que
           sea). Cuando termines, tocá &quot;Listo&quot; y guardamos tus cookies cifradas.
         </p>
-        <div className="mb-3 flex items-center gap-2 rounded border border-border bg-background/40 p-2">
-          <button
-            type="button"
-            onClick={handleLaunchBrowser}
-            disabled={launchingBrowser}
-            className="rounded border border-accent/40 px-2 py-1 text-xs text-accent hover:bg-accent/10 disabled:opacity-50"
-          >
-            {launchingBrowser ? 'Lanzando…' : 'Abrir Brave con debug port'}
-          </button>
-          <span className="text-xs text-fg-muted">
-            {launchMessage ?? 'Cerrá tu Brave actual y dale click. El agent va a abrir uno nuevo con debug port para que el flow de login use el mismo browser.'}
-          </span>
+        <div className="mb-3 space-y-2 rounded border border-accent/40 bg-accent/5 p-3">
+          <p className="text-xs font-semibold text-fg">Pasos:</p>
+          <ol className="list-decimal pl-5 text-xs text-fg-muted space-y-1">
+            <li><strong>Cerrá tu Brave</strong> (Chrome lockea el profile, no se puede abrir uno nuevo con el mismo profile).</li>
+            <li>Tocá <strong>&quot;Abrir Brave con debug port&quot;</strong> abajo. El agent va a abrir Brave con tu profile y --remote-debugging-port=9222.</li>
+            <li>Una vez que Brave esté abierto, tocá <strong>&quot;Capturar sesión iniciada&quot;</strong> en la plataforma que querés loguear.</li>
+          </ol>
+          <div className="flex items-center gap-2 pt-2">
+            <button
+              type="button"
+              onClick={handleLaunchBrowser}
+              disabled={launchingBrowser}
+              className="rounded border border-accent/40 px-2 py-1 text-xs text-accent hover:bg-accent/10 disabled:opacity-50"
+            >
+              {launchingBrowser ? 'Lanzando…' : 'Abrir Brave con debug port'}
+            </button>
+            {launchMessage && <span className="text-xs text-fg-muted">{launchMessage}</span>}
+          </div>
         </div>
         <ul className="space-y-2">
           {knownWithStatus.map((k) => (
