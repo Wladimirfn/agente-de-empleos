@@ -1,10 +1,12 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { promises as fs, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { chromium, type Browser, type BrowserContext } from 'playwright';
 import type { BrowserId } from './browser-detector.js';
 
 const DEFAULT_CDP_PORT = 9222;
+const PROBE_TIMEOUT_MS = 500;
+const LAUNCH_TIMEOUT_MS = 20_000;
 /**
  * Default location for browser profiles. Each platform gets its own
  * subdirectory so the agent's cookies for Indeed don't bleed into the
@@ -15,19 +17,31 @@ const DEFAULT_CDP_PORT = 9222;
 export const PROFILES_ROOT = 'storage/browser-profiles';
 
 /**
+ * Probe the CDP endpoint on a port. Tries both 127.0.0.1 (IPv4) and
+ * localhost (which on Windows resolves to IPv6 ::1 first). Chrome's
+ * CDP endpoint can bind to either, so we accept either.
+ */
+async function probeCDP(port: number): Promise<boolean> {
+  for (const host of ['127.0.0.1', 'localhost']) {
+    try {
+      const res = await fetch(`http://${host}:${port}/json/version`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+      if (res.ok) return true;
+    } catch {
+      // Try next host
+    }
+  }
+  return false;
+}
+
+/**
  * Picks the next free local TCP port starting from the given port.
  * Used so two simultaneous capture tasks don't collide on 9222.
+ * Returns the lowest port that does NOT have a working CDP endpoint.
  */
 async function pickFreePort(start: number): Promise<number> {
-  // Try a small range. If all are taken, the user has bigger problems.
   for (let p = start; p < start + 20; p++) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${p}/json/version`, { signal: AbortSignal.timeout(200) });
-      if (!res.ok) return p;
-    } catch {
-      // Connection refused → port is free.
-      return p;
-    }
+    const inUse = await probeCDP(p);
+    if (!inUse) return p;
   }
   return start;
 }
@@ -48,11 +62,12 @@ export interface LaunchOptions {
  * crashing so the user can keep using it after the agent restarts.
  */
 export async function launchBrowser(opts: LaunchOptions): Promise<{ process: ChildProcess; cdpPort: number }> {
-  await fs.mkdir(opts.profileDir, { recursive: true });
+  const profileDir = resolve(opts.profileDir);
+  await fs.mkdir(profileDir, { recursive: true });
   const cdpPort = opts.cdpPort ?? await pickFreePort(DEFAULT_CDP_PORT);
   const args = [
     `--remote-debugging-port=${cdpPort}`,
-    `--user-data-dir=${opts.profileDir}`,
+    `--user-data-dir=${profileDir}`,
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-blink-features=AutomationControlled',
@@ -63,19 +78,14 @@ export async function launchBrowser(opts: LaunchOptions): Promise<{ process: Chi
     windowsHide: false,
   });
   process.unref();
-  // Wait for the CDP endpoint to be reachable before returning. Without
-  // this, connectOverCDP races the browser startup and fails.
-  const deadline = Date.now() + 10_000;
+  // Wait for the CDP endpoint to be reachable. We try both 127.0.0.1
+  // and localhost (Chrome on Windows may bind to IPv6 first).
+  const deadline = Date.now() + LAUNCH_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${cdpPort}/json/version`, { signal: AbortSignal.timeout(500) });
-      if (res.ok) return { process, cdpPort };
-    } catch {
-      // Not ready yet.
-    }
+    if (await probeCDP(cdpPort)) return { process, cdpPort };
     await new Promise((r) => setTimeout(r, 200));
   }
-  throw new Error(`Browser CDP endpoint did not come up on port ${cdpPort} within 10s`);
+  throw new Error(`Browser CDP endpoint did not come up on port ${cdpPort} within ${LAUNCH_TIMEOUT_MS / 1000}s`);
 }
 
 /**
@@ -85,13 +95,19 @@ export async function launchBrowser(opts: LaunchOptions): Promise<{ process: Chi
  * the given port.
  */
 export async function connectToBrowser(cdpPort: number = DEFAULT_CDP_PORT): Promise<Browser | null> {
-  try {
-    const res = await fetch(`http://127.0.0.1:${cdpPort}/json/version`, { signal: AbortSignal.timeout(500) });
-    if (!res.ok) return null;
-  } catch {
-    return null;
+  if (!(await probeCDP(cdpPort))) return null;
+  // Try 127.0.0.1 first, then localhost, since connectOverCDP needs a
+  // working endpoint. The browser is reachable on either, so we just
+  // pick the one that works.
+  for (const host of ['127.0.0.1', 'localhost']) {
+    try {
+      const browser = await chromium.connectOverCDP(`http://${host}:${cdpPort}`);
+      return browser;
+    } catch {
+      // Try next host
+    }
   }
-  return chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+  return null;
 }
 
 /**
