@@ -42,7 +42,7 @@ describe('migration journal alignment', () => {
     expect(hashes).toContain('61a07e5240d603c22afcddc6a9d5a1a111acfb0a60848f443e3475e67a3fb364'); // 0000
     expect(hashes).toContain('ac83e9fdbfea5aec696181e7ffbab3107d68400205ea34f5f69e89b954e78ea6'); // 0010
     expect(hashes).toContain('2a43ff205ad9c553559d9e326156a2d358bb3a75d895d188f16e3cec4cbc9475'); // 0011
-    expect(hashes).toContain('a9a1b3afb3c92365c77983f198a34b1f43821c53fb5ce8a8e2cba893ad84a46c'); // 0012
+    expect(hashes).toContain('7f8a7f989750d194c615679bbd39e3287c908db2e685c74eb0e161f2cc502818'); // 0012
   });
 
   it('is idempotent — running migrations again is a no-op', async () => {

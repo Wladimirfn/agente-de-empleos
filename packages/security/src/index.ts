@@ -16,6 +16,8 @@ export {
   setSessionCompleted,
   setSessionUserCompleted,
   setSessionFailed,
+  setSessionExpired,
+  setSessionCancelled,
   expireStaleSessions,
   SESSION_TTL_MS,
 } from './session-capture.js';

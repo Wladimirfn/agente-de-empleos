@@ -23,7 +23,7 @@ export const sessionCaptures = sqliteTable('session_captures', {
   id: text('id').primaryKey(),
   slug: text('slug').notNull(),
   status: text('status', {
-    enum: ['pending', 'ready', 'completed', 'expired', 'failed'],
+    enum: ['pending', 'ready', 'completed', 'expired', 'failed', 'cancelled'],
   }).notNull().default('pending'),
   /** Set when the worker has opened the browser and the user can log in. */
   readyAt: text('ready_at'),

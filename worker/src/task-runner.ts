@@ -276,7 +276,7 @@ export function registerBuiltinHandlers(): void {
     // is heavy. Loading it on demand keeps the cold-start path fast.
     const captureSession = async (task: TaskRow) => {
       const payload = JSON.parse(task.payloadJson) as { sessionId: string; slug: string; platformUrl: string };
-      const { getSessionCapture, setSessionReady, setSessionCompleted, setSessionFailed } = await import('@employment-agent/security');
+      const { getSessionCapture, setSessionReady, setSessionCompleted, setSessionFailed, setSessionExpired } = await import('@employment-agent/security');
       const { persistStorageState } = await import('@employment-agent/security');
     const { chromium } = await import('playwright');
 
@@ -329,6 +329,7 @@ export function registerBuiltinHandlers(): void {
         const current = await getSessionCapture(payload.sessionId);
         if (!current) return; // session was deleted
         if (current.status === 'completed') return; // shouldn't happen but safe
+        if (current.status === 'cancelled') return; // user clicked Cancel in the UI
         if (current.userCompletedAt) {
           const storageState = JSON.stringify(await context.storageState());
           await persistStorageState(payload.slug, storageState);
@@ -342,7 +343,13 @@ export function registerBuiltinHandlers(): void {
         }
       }
 
-      // Timeout.
+      // Timeout. Re-check before persisting in case the user cancelled
+      // in the last second — don't overwrite a 'cancelled' status with
+      // 'expired'.
+      const final = await getSessionCapture(payload.sessionId);
+      if (final && final.status !== 'cancelled') {
+        await setSessionExpired(payload.sessionId);
+      }
       await events.emit({
         kind: 'session_capture_expired',
         message: `La sesión de ${payload.slug} expiró sin completarse.`,

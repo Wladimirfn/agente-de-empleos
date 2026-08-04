@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 
 type LoginStatus = 'success' | '2fa_required' | 'login_failed' | 'no_login_form' | 'unknown';
-type SessionStatus = 'pending' | 'ready' | 'completed' | 'expired' | 'failed';
+type SessionStatus = 'pending' | 'ready' | 'completed' | 'expired' | 'failed' | 'cancelled';
 
 interface CredentialSummary {
   slug: string;
@@ -159,6 +159,19 @@ export default function CredentialsSection() {
     setSession(null);
     setSessionError(null);
     void refresh();
+  }
+
+  async function handleSessionCancel() {
+    if (!session) return;
+    // Tell the worker to stop polling so the headed browser closes.
+    try {
+      await fetch(`/api/settings/credentials/session/${encodeURIComponent(session.id)}/cancel`, {
+        method: 'POST',
+      });
+    } catch {
+      // The polling will still pick up the next server-side state.
+    }
+    setSession({ ...session, status: 'cancelled' });
   }
 
   const knownWithStatus = catalog.map((k) => ({
@@ -324,7 +337,7 @@ export default function CredentialsSection() {
               {(session.status === 'pending' || session.status === 'ready') && (
                 <>
                   <button
-                    onClick={handleSessionClose}
+                    onClick={handleSessionCancel}
                     className="rounded border border-border px-3 py-1.5 text-xs hover:bg-background/40"
                   >
                     Cancelar
