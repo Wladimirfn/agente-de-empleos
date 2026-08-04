@@ -64,4 +64,23 @@ describe('credentials DB ops', () => {
     await deleteCredential('trabajando');
     expect(await loadCredentialPlaintext('trabajando')).toBeNull();
   });
+
+  it('recordLoginStatus updates lastLoginAt and lastLoginStatus', async () => {
+    const { recordLoginStatus } = await import('@employment-agent/security');
+    await saveCredential({ slug: 'indeed', email: 'e@e.com', password: 'p' });
+    await recordLoginStatus('indeed', '2fa_required');
+    const summaries = await listCredentials();
+    const s = summaries.find((row) => row.slug === 'indeed');
+    expect(s?.lastLoginStatus).toBe('2fa_required');
+    expect(s?.lastLoginAt).not.toBeNull();
+  });
+
+  it('persistStorageState encrypts a new storage state and round-trips it', async () => {
+    const { persistStorageState } = await import('@employment-agent/security');
+    await saveCredential({ slug: 'computrabajo', email: 'e@e.com', password: 'p' });
+    const state = JSON.stringify({ cookies: [{ name: 'session', value: 'refreshed-token' }] });
+    await persistStorageState('computrabajo', state);
+    const pt = await loadCredentialPlaintext('computrabajo');
+    expect(pt?.storageState).toBe(state);
+  });
 });

@@ -1,26 +1,32 @@
 import { useEffect, useState } from 'react';
 
+type LoginStatus = 'success' | '2fa_required' | 'login_failed' | 'no_login_form' | 'unknown';
+
 interface CredentialSummary {
   slug: string;
   hasEmail: boolean;
   hasStorageState: boolean;
   lastLoginAt: string | null;
-  lastLoginStatus: string;
+  lastLoginStatus: LoginStatus;
   consentAt: string;
   updatedAt: string;
 }
 
-const KNOWN_SLUGS = [
-  { slug: 'indeed', label: 'Indeed Chile' },
-  { slug: 'laborum', label: 'Laborum.cl' },
-  { slug: 'computrabajo', label: 'Computrabajo.cl' },
-  { slug: 'chiletrabajos', label: 'Chiletrabajos.cl' },
-  { slug: 'empleosaqua', label: 'Empleos Aqua' },
-  { slug: 'trabajando', label: 'Trabajando.cl' },
-];
+interface CatalogSkill {
+  slug: string;
+  version: string;
+  displayName: string;
+  capabilities: { canScan: boolean; canApply: boolean; canDetectLoggedOut: boolean };
+  source: 'production' | 'example';
+}
+
+interface SkillsPayload {
+  skills: CatalogSkill[];
+}
 
 export default function CredentialsSection() {
   const [credentials, setCredentials] = useState<CredentialSummary[]>([]);
+  const [catalog, setCatalog] = useState<CatalogSkill[]>([]);
   const [loading, setLoading] = useState(true);
   const [slug, setSlug] = useState('');
   const [email, setEmail] = useState('');
@@ -30,11 +36,15 @@ export default function CredentialsSection() {
   const [saving, setSaving] = useState(false);
 
   async function refresh() {
-    setLoading(true);
     try {
-      const res = await fetch('/api/settings/credentials');
-      const data = await res.json() as { credentials: CredentialSummary[] };
-      setCredentials(data.credentials);
+      const [credsRes, skillsRes] = await Promise.all([
+        fetch('/api/settings/credentials'),
+        fetch('/api/skills'),
+      ]);
+      const credsData = await credsRes.json() as { credentials: CredentialSummary[] };
+      const skillsData = await skillsRes.json() as SkillsPayload;
+      setCredentials(credsData.credentials);
+      setCatalog(skillsData.skills.filter((s) => s.source === 'production'));
     } finally {
       setLoading(false);
     }
@@ -76,8 +86,9 @@ export default function CredentialsSection() {
     await refresh();
   }
 
-  const knownWithStatus = KNOWN_SLUGS.map((k) => ({
-    ...k,
+  const knownWithStatus = catalog.map((k) => ({
+    slug: k.slug,
+    label: k.displayName,
     credential: credentials.find((c) => c.slug === k.slug),
   }));
 
@@ -96,8 +107,8 @@ export default function CredentialsSection() {
                 className="mt-1 w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
               >
                 <option value="">— elegir —</option>
-                {KNOWN_SLUGS.map((k) => (
-                  <option key={k.slug} value={k.slug}>{k.label}</option>
+                {catalog.map((k) => (
+                  <option key={k.slug} value={k.slug}>{k.displayName}</option>
                 ))}
               </select>
             </label>
