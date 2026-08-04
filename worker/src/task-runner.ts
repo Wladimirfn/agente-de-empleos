@@ -276,8 +276,7 @@ export function registerBuiltinHandlers(): void {
     // is heavy. Loading it on demand keeps the cold-start path fast.
     const captureSession = async (task: TaskRow) => {
       const payload = JSON.parse(task.payloadJson) as { sessionId: string; slug: string; platformUrl: string };
-      const { getSessionCapture, setSessionReady, setSessionCompleted, setSessionFailed, setSessionExpired } = await import('@employment-agent/security');
-      const { persistStorageState } = await import('@employment-agent/security');
+      const { getSessionCapture, setSessionReady, setSessionCompleted, setSessionFailed, setSessionExpired, persistStorageState } = await import('@employment-agent/security');
     const { chromium } = await import('playwright');
 
     const session = await getSessionCapture(payload.sessionId);

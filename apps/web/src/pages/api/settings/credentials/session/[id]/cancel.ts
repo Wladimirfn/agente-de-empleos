@@ -13,9 +13,9 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
  *
  * The user clicked "Cancelar" in the UI. The worker is polling this row
  * for `user_completed_at`; flipping status to 'cancelled' is the signal
- * that makes the worker exit its loop cleanly. We only allow cancellation
- * of sessions that are still in 'pending' or 'ready' — once a session is
- * 'completed' or 'expired' there's nothing to cancel.
+ * that makes the worker exit its loop cleanly. The cancel is a no-op on
+ * sessions that are already terminal (completed, expired, or cancelled)
+ * so the endpoint is idempotent — clients can retry without side effects.
  */
 export const POST: APIRoute = async ({ params }) => {
   const id = params.id?.trim() ?? '';

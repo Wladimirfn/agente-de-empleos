@@ -93,8 +93,9 @@ export async function setSessionFailed(id: string, error: string): Promise<void>
 
 /**
  * Mark the session as expired (worker hit its 5-min deadline before the
- * user clicked "Listo"). Idempotent: calling this on an already-terminal
- * session is a no-op.
+ * user clicked "Listo"). The caller is responsible for not overwriting
+ * a 'cancelled' status — see the worker poll loop, which re-reads the
+ * row before calling this.
  */
 export async function setSessionExpired(id: string): Promise<void> {
   await db.update(sessionCaptures)
