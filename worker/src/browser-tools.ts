@@ -101,25 +101,44 @@ export async function createBrowserTools(opts?: {
   headless?: boolean;
   storageState?: string;
   approvedOrigin?: string;
+  /**
+   * Use a pre-launched browser (e.g. real Chrome/Brave attached via
+   * CDP) instead of launching Playwright's bundled Chromium. When set,
+   * we reuse the browser's default context — that's where the cookies
+   * from the user-data-dir live.
+   */
+  existingBrowser?: Browser;
 }): Promise<BrowserAgentTools> {
   const headless = opts?.headless ?? false;
-  const browser: Browser = await chromium.launch({
+  const isAttached = Boolean(opts?.existingBrowser);
+  const browser: Browser = opts?.existingBrowser ?? await chromium.launch({
     headless,
     args: ['--disable-blink-features=AutomationControlled'],
   });
 
-  const contextOptions: Record<string, unknown> = {
-    userAgent:
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-    locale: 'es-CL',
-    viewport: { width: 1280, height: 900 },
-  };
-  if (opts?.storageState) {
-    contextOptions.storageState = opts.storageState;
+  // For attached browsers, reuse the default context (one per profile).
+  // The cookies/IndexedDB from the user-data-dir are already there.
+  let context: BrowserContext;
+  let page: Page;
+  if (isAttached) {
+    const existing = browser.contexts();
+    context = existing[0] ?? await browser.newContext();
+    // Add a route guard for the approved origin. Real browser doesn't
+    // skip this — without the guard the agent could wander off-platform.
+    page = await context.newPage();
+  } else {
+    const contextOptions: Record<string, unknown> = {
+      userAgent:
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+      locale: 'es-CL',
+      viewport: { width: 1280, height: 900 },
+    };
+    if (opts?.storageState) {
+      contextOptions.storageState = opts.storageState;
+    }
+    context = await browser.newContext(contextOptions);
+    page = await context.newPage();
   }
-
-  const context: BrowserContext = await browser.newContext(contextOptions);
-  const page: Page = await context.newPage();
   let policyBlocked = false;
   let lastApprovedUrl = opts?.approvedOrigin ?? '';
   if (opts?.approvedOrigin) {

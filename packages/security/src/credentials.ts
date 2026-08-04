@@ -14,6 +14,8 @@ export interface CredentialSummary {
   lastLoginStatus: LoginStatus;
   consentAt: string;
   updatedAt: string;
+  browserId: string | null;
+  profilePath: string | null;
 }
 
 export interface CredentialPlaintext {
@@ -21,6 +23,9 @@ export interface CredentialPlaintext {
   email: string;
   password: string;
   storageState: string | null;
+  browserId: string | null;
+  browserPath: string | null;
+  profilePath: string | null;
 }
 
 /**
@@ -37,6 +42,8 @@ export async function listCredentials(): Promise<CredentialSummary[]> {
     lastLoginStatus: row.lastLoginStatus,
     consentAt: row.consentAt,
     updatedAt: row.updatedAt,
+    browserId: row.browserId,
+    profilePath: row.profilePath,
   }));
 }
 
@@ -96,6 +103,9 @@ export async function loadCredentialPlaintext(slug: string): Promise<CredentialP
     email: decrypt(row.emailCipher, key),
     password: decrypt(row.passwordCipher, key),
     storageState: row.storageStateCipher ? decrypt(row.storageStateCipher, key) : null,
+    browserId: row.browserId,
+    browserPath: row.browserPath,
+    profilePath: row.profilePath,
   };
 }
 
@@ -112,5 +122,24 @@ export async function persistStorageState(slug: string, storageState: string): P
   const now = new Date().toISOString();
   await db.update(platformCredentials)
     .set({ storageStateCipher, updatedAt: now })
+    .where(eq(platformCredentials.slug, slug));
+}
+
+/**
+ * Save the browser profile (typically the user-data-dir path) for a
+ * platform. Used by the session capture flow after the user logs in.
+ * The proxy for "is the user logged in on this platform" is the
+ * existence of the profile dir; we don't need to encrypt the path
+ * itself since it's not a secret.
+ */
+export async function persistBrowserProfile(
+  slug: string,
+  browserId: string,
+  browserPath: string,
+  profilePath: string,
+): Promise<void> {
+  const now = new Date().toISOString();
+  await db.update(platformCredentials)
+    .set({ browserId, browserPath, profilePath, updatedAt: now })
     .where(eq(platformCredentials.slug, slug));
 }

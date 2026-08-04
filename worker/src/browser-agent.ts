@@ -175,6 +175,11 @@ export async function runBrowserAgent(args: {
   headless?: boolean;
   storageState?: string;
   loginCredentials?: { email: string; password: string };
+  /** Pre-launched browser (real Chrome/Brave via CDP). When set, we use
+   * the browser's default context instead of launching Playwright's
+   * bundled Chromium. The cookies from the user's profile are already
+   * in that context. */
+  existingBrowser?: import('playwright').Browser;
   onJobsFound?: (jobs: BrowserAgentJob[]) => Promise<{ new: number; duplicate: number }>;
   onEvent?: (kind: string, message: string) => Promise<void>;
   onBlocked?: (reason: ChallengeKind | 'transport' | 'unknown', marker: string | null) => Promise<void>;
@@ -197,6 +202,7 @@ export async function runBrowserAgent(args: {
     headless: args.headless ?? false,
     storageState: args.storageState,
     approvedOrigin: new URL(platformUrl).origin,
+    existingBrowser: args.existingBrowser,
   });
 
   const messages: ChatMessage[] = [

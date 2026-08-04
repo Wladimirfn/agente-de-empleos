@@ -7,6 +7,7 @@ export {
   loadCredentialPlaintext,
   recordLoginStatus,
   persistStorageState,
+  persistBrowserProfile,
 } from './credentials.js';
 export type { CredentialSummary, CredentialPlaintext, LoginStatus } from './credentials.js';
 export {
