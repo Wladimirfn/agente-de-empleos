@@ -376,6 +376,21 @@ export function registerBuiltinHandlers(): void {
     const platformId = await ensurePlatform(payload.skillSlug, payload.skillSlug);
     const llm = await loadLLM();
 
+    // Respect active platform blocks: if the platform is currently blocked
+    // (e.g. Cloudflare verification cooldown), skip the scan and emit a
+    // summary so the user can see what happened.
+    const { isPlatformBlocked, getCurrentBlock, markPlatformBlocked } = await import('./platform-blocks.js');
+    if (await isPlatformBlocked(payload.skillSlug)) {
+      const block = await getCurrentBlock(payload.skillSlug);
+      const until = block?.until ?? 'unknown';
+      await events.emit({
+        kind: 'scan_skipped',
+        message: `Platform ${payload.skillSlug} is blocked until ${until} (${block?.reason ?? 'unknown'}); skipping scan.`,
+        payload: { skillSlug: payload.skillSlug, until, reason: block?.reason },
+      });
+      return;
+    }
+
     // Build queries from profile (same logic as skills)
     const summary = profile.summary ?? '';
     const rolesMatch = summary.match(/Roles objetivo activos:\s*(.+)/);
@@ -413,6 +428,14 @@ export function registerBuiltinHandlers(): void {
       },
       onEvent: async (kind, message) => {
         await events.emit({ kind: `agent_${kind}`, message });
+      },
+      onBlocked: async (reason, marker) => {
+        await markPlatformBlocked(payload.skillSlug, reason, marker);
+        await events.emit({
+          kind: 'platform_blocked',
+          message: `Platform ${payload.skillSlug} marked as blocked (${reason}); scheduler will skip for ${30} minutes.`,
+          payload: { skillSlug: payload.skillSlug, reason, marker, ttlMinutes: 30 },
+        });
       },
     });
 

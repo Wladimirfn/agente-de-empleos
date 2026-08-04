@@ -14,6 +14,7 @@ import type { LLMProvider, ChatMessage } from '@employment-agent/llm';
 import type { CandidateProfile } from '@employment-agent/domain';
 import type { BrowserAgentTools, PageState } from './browser-tools.js';
 import { createBrowserTools, hasUrlCredentials, sanitizeOutbound, sanitizeUrlsInText } from './browser-tools.js';
+import { detectChallenge, type ChallengeKind } from './challenge-detector.js';
 
 export interface BrowserAgentResult {
   jobsFound: number;
@@ -34,6 +35,7 @@ export interface BrowserAgentJob {
 }
 
 const MAX_STEPS = 25;
+const MAX_WAIT_HUMAN = 2;
 const ACTIONS = new Set(['navigate', 'click', 'type', 'press_enter', 'scroll', 'go_back', 'wait_human', 'save_jobs', 'done']);
 export function safeActionName(value: unknown): string {
   const action = String(value ?? '');
@@ -166,9 +168,11 @@ export async function runBrowserAgent(args: {
   storageState?: string;
   onJobsFound?: (jobs: BrowserAgentJob[]) => Promise<{ new: number; duplicate: number }>;
   onEvent?: (kind: string, message: string) => Promise<void>;
+  onBlocked?: (reason: ChallengeKind | 'transport' | 'unknown', marker: string | null) => Promise<void>;
 }): Promise<BrowserAgentResult> {
   const { platform, platformUrl, queries, profile, llm } = args;
   const emit = args.onEvent ?? (async () => {});
+  const onBlocked = args.onBlocked ?? (async () => {});
 
   let totalNew = 0;
   let totalDup = 0;
@@ -176,6 +180,7 @@ export async function runBrowserAgent(args: {
   let steps = 0;
   let stepsSinceSave = 0;
   let totalSaves = 0;
+  let waitHumanCount = 0;
 
   const tools = await createBrowserTools({
     headless: args.headless ?? false,
@@ -200,6 +205,24 @@ export async function runBrowserAgent(args: {
       // Extract current page state
       const state = await tools.extractPage();
       const stateText = formatPageState(state);
+
+      // Early challenge detection: short-circuit before burning steps on a
+      // Cloudflare-style wall or a login form the agent cannot solve.
+      const challenge = detectChallenge(state);
+      if (challenge) {
+        await emit('agent_challenge_detected', `Challenge detected: ${challenge.kind} (marker: ${challenge.marker})`);
+        await onBlocked(challenge.kind, challenge.marker);
+        const summary = `Blocked by ${challenge.kind} (${sanitizeUrlsInText(challenge.marker)}). Agent cannot solve this from an automated environment.`;
+        await emit('agent_done', summary);
+        return {
+          jobsFound: totalNew + totalDup,
+          jobsNew: totalNew,
+          jobsDuplicate: totalDup,
+          errors,
+          steps,
+          summary,
+        };
+      }
 
       // Send to LLM
       messages.push({ role: 'user', content: `Current page state:\n${stateText}` });
@@ -264,6 +287,21 @@ export async function runBrowserAgent(args: {
           result = await tools.goBack();
           break;
         case 'wait_human': {
+          if (waitHumanCount >= MAX_WAIT_HUMAN) {
+            await emit('agent_challenge_detected', `wait_human cap reached (${MAX_WAIT_HUMAN}); forcing done with blocked`);
+            await onBlocked('unknown', 'wait_human-cap');
+            const summary = `wait_human cap reached (${MAX_WAIT_HUMAN}). Marking platform as blocked.`;
+            await emit('agent_done', summary);
+            return {
+              jobsFound: totalNew + totalDup,
+              jobsNew: totalNew,
+              jobsDuplicate: totalDup,
+              errors,
+              steps,
+              summary,
+            };
+          }
+          waitHumanCount++;
           const msg = sanitizeUrlsInText(String(action.message ?? 'Human intervention needed'));
           await emit('agent_wait_human', msg);
           result = await tools.waitForHuman(msg);
