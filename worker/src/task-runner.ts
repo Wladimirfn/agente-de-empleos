@@ -340,11 +340,13 @@ export function registerBuiltinHandlers(): void {
 
         const context = launchedBrowser.contexts()[0] ?? await launchedBrowser.newContext();
 
-        // Reuse the existing page if Chrome opened with one. If empty,
-        // create a new page. Without this, newPage() always opens a NEW
-        // tab behind the user's visible one.
-        const pages = context.pages();
-        const page = pages[0] ?? await context.newPage();
+        // Always create a fresh tab so we don't disturb the user's
+        // existing tabs (their web app, OAuth flows, etc.) and so the
+        // user sees the platform page in a new visible tab they can
+        // interact with. Each session gets its own tab.
+        const page = await context.newPage();
+        await page.bringToFront();
+        console.log(`[CAPTURE_SESSION] New page created. Total pages: ${context.pages().length}. Beginning navigation to ${approvedOrigin}`);
 
         // Block navigation outside the approved origin while the user is
         // logging in. We DO allow the well-known OAuth providers here
@@ -363,6 +365,7 @@ export function registerBuiltinHandlers(): void {
         });
 
         await page.goto(approvedOrigin, { timeout: 30_000, waitUntil: 'domcontentloaded' });
+        console.log(`[CAPTURE_SESSION] Navigation complete. Page URL: ${page.url()}`);
 
         await events.emit({
           kind: 'session_capture_ready',
