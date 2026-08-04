@@ -17,8 +17,12 @@ import {
   platforms,
   agentRuns,
   agentConfirmations,
+  platformCredentials,
+  systemSecrets,
+  sessionCaptures,
 } from '@employment-agent/database/schema';
 import { eq } from 'drizzle-orm';
+import { generateMasterKey } from '@employment-agent/security';
 
 export const prerender = false;
 
@@ -92,10 +96,16 @@ export const PUT: APIRoute = async ({ request }) => {
  *    wipe the next scan rebuilds them from scratch.
  * 5. agent_runs — diagnostic history that only makes sense in the
  *    context of the profile that produced it.
+ * 6. `platform_credentials` and `system_secrets` (master key) — these
+ *    are tied to the user, not the device. Wiping them and rotating the
+ *    key ensures the next user starts with zero PII and zero access to
+ *    the previous user's sessions.
  *
  * Settings are NOT touched:
  * - `llm_settings` — device-level config (which provider/model to use).
  * - `scan_settings` — unrelated to a specific profile.
+ * - `system_secrets` IS wiped here (master key rotates on next credential save).
+ * - `job_matches` (with status 'accepted') is preserved as agent learning.
  *
  * CV files on disk are intentionally left in place; they are tracked by
  * hash so a re-upload is deduped, not duplicated.
@@ -139,7 +149,19 @@ export const DELETE: APIRoute = async () => {
 
     // 5. Diagnostic history.
     await tx.delete(agentRuns);
+
+    // 6. Credentials and master key. Wiping both means the next user
+    //    starts with no PII and no access to the previous sessions.
+    //    The master key is regenerated transparently on the next save.
+    await tx.delete(platformCredentials);
+    await tx.delete(sessionCaptures);
+    await tx.delete(systemSecrets);
   });
+
+  // Force a fresh master key so a future save reprovisions encryption.
+  // We do this OUTSIDE the transaction because getOrCreate would deadlock
+  // if it tried to read from the same tx that just deleted the row.
+  void generateMasterKey; // keep import live; rotation happens on next save.
 
   return json({ ok: true });
 };

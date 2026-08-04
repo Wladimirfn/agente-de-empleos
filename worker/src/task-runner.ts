@@ -2,6 +2,7 @@ import { claimNextTask, markCompleted, markFailed, markRetrying, TaskRow } from 
 import { isAppError, registry } from '@employment-agent/skill-runtime';
 import { DatabaseEventEmitter } from './event-emitter.js';
 import { createSkillContext } from '@employment-agent/skill-runtime';
+import { isApprovedOrigin } from './browser-tools.js';
 import type { CandidateProfile } from '@employment-agent/domain';
 import type { LLMProvider } from '@employment-agent/llm';
 import { db } from '@employment-agent/database';
@@ -271,6 +272,96 @@ export function registerBuiltinHandlers(): void {
   const events = new DatabaseEventEmitter();
   const ctx = createSkillContext(events);
 
+    // Lazy import: the session-capture handler requires Playwright, which
+    // is heavy. Loading it on demand keeps the cold-start path fast.
+    const captureSession = async (task: TaskRow) => {
+      const payload = JSON.parse(task.payloadJson) as { sessionId: string; slug: string; platformUrl: string };
+      const { getSessionCapture, setSessionReady, setSessionCompleted, setSessionFailed } = await import('@employment-agent/security');
+      const { persistStorageState } = await import('@employment-agent/security');
+    const { chromium } = await import('playwright');
+
+    const session = await getSessionCapture(payload.sessionId);
+    if (!session) {
+      throw new Error(`Session ${payload.sessionId} not found`);
+    }
+    const approvedOrigin = new URL(payload.platformUrl).origin;
+
+    let browser: import('playwright').Browser | null = null;
+    try {
+      // Headed is important: the user must see and interact with the page.
+      browser = await chromium.launch({ headless: false });
+      const context = await browser.newContext({
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        locale: 'es-CL',
+        viewport: { width: 1280, height: 900 },
+      });
+      // Block navigation outside the approved origin while the user is
+      // logging in. We DO allow the well-known OAuth providers here
+      // (Google, Apple, Facebook, Microsoft, GitHub) because platforms
+      // like Indeed require the user to complete the OAuth flow inside
+      // the headed browser. The whitelist is intentionally narrow — see
+      // OAUTH_ALLOWED_ORIGINS in session-capture-policy.ts.
+      const { shouldAllowNavigation } = await import('./session-capture-policy.js');
+      await context.route('**/*', async (route) => {
+        const url = route.request().url();
+        if (!shouldAllowNavigation(url, approvedOrigin)) {
+          await route.abort('blockedbyclient');
+          return;
+        }
+        await route.continue();
+      });
+
+      const page = await context.newPage();
+      await page.goto(approvedOrigin, { timeout: 30_000, waitUntil: 'domcontentloaded' });
+
+      await events.emit({
+        kind: 'session_capture_ready',
+        message: `Navegador abierto en ${approvedOrigin}. Loguéate y tocá "Listo" cuando termines.`,
+        payload: { sessionId: payload.sessionId, slug: payload.slug },
+      });
+      await setSessionReady(payload.sessionId);
+
+      // Poll for user completion. Each tick re-reads the row so the
+      // user's "Listo" click is observable across process boundaries.
+      const deadline = Date.now() + 5 * 60_000;
+      while (Date.now() < deadline) {
+        await sleep(1_000);
+        const current = await getSessionCapture(payload.sessionId);
+        if (!current) return; // session was deleted
+        if (current.status === 'completed') return; // shouldn't happen but safe
+        if (current.userCompletedAt) {
+          const storageState = JSON.stringify(await context.storageState());
+          await persistStorageState(payload.slug, storageState);
+          await setSessionCompleted(payload.sessionId);
+          await events.emit({
+            kind: 'session_capture_completed',
+            message: `Sesión de ${payload.slug} guardada y cifrada.`,
+            payload: { slug: payload.slug },
+          });
+          return;
+        }
+      }
+
+      // Timeout.
+      await events.emit({
+        kind: 'session_capture_expired',
+        message: `La sesión de ${payload.slug} expiró sin completarse.`,
+        payload: { sessionId: payload.sessionId, slug: payload.slug },
+      });
+    } catch (err) {
+      await setSessionFailed(payload.sessionId, err instanceof Error ? err.message : String(err));
+      await events.emit({
+        kind: 'session_capture_failed',
+        message: `Falló la captura de sesión para ${payload.slug}: ${err instanceof Error ? err.message : String(err)}`,
+        payload: { sessionId: payload.sessionId, slug: payload.slug },
+      });
+      throw err;
+    } finally {
+      if (browser) await browser.close().catch(() => undefined);
+    }
+  };
+  registerHandler('CAPTURE_SESSION', captureSession);
+
   registerHandler('SCAN_ACTIVE_PLATFORMS', async (task) => {
     const payload = JSON.parse(task.payloadJson) as { triggeredBy?: string };
     const skills = registry.list();
@@ -404,6 +495,8 @@ export function registerBuiltinHandlers(): void {
     if (queries.length === 0) queries.push('mantención', 'refrigeración');
 
     const { runBrowserAgent } = await import('./browser-agent.js');
+    const { loadCredentialPlaintext } = await import('@employment-agent/security');
+    const credential = await loadCredentialPlaintext(payload.skillSlug);
     const result = await runBrowserAgent({
       platform: payload.skillSlug,
       platformUrl: payload.platformUrl,
@@ -411,6 +504,8 @@ export function registerBuiltinHandlers(): void {
       profile,
       llm,
       headless: false, // Headed so user can solve CAPTCHAs
+      loginCredentials: credential ? { email: credential.email, password: credential.password } : undefined,
+      storageState: credential?.storageState ?? undefined,
       onJobsFound: async (agentJobs) => {
         let newC = 0, dupC = 0;
         for (const job of agentJobs) {

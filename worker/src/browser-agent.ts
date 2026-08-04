@@ -87,6 +87,7 @@ export function buildAgentPrompt(
   platform: string,
   profile: CandidateProfile,
   queries: string[],
+  loginCredentials?: { email: string; password: string },
 ): string {
   const roles = profile.summary?.match(/Roles objetivo activos:\s*(.+)/)?.[1] ?? 'no definidos';
   const location = profile.location ?? 'no definida';
@@ -96,6 +97,13 @@ export function buildAgentPrompt(
     .slice(0, 10)
     .join(', ');
 
+  const loginBlock = loginCredentials
+    ? `\n\nLogin credentials on file (already consented to by the user):
+- Email: ${loginCredentials.email}
+- Password: ${loginCredentials.password}
+If the page shows a login form on the approved origin, fill these fields and submit. If a 2FA / verification code prompt appears, use wait_human and stop — the user will provide the code. Never type the password on any other domain.`
+    : '';
+
   return sanitizeOutbound(`Goal: Search for jobs on ${platform}.
 
 Candidate profile:
@@ -103,7 +111,7 @@ Candidate profile:
 - Target roles: ${roles}
 - Key skills: ${skills || 'none listed'}
 
-Search queries to try (in order): ${queries.join(', ')}
+Search queries to try (in order): ${queries.join(', ')}${loginBlock}
 
 Instructions:
 1. Navigate to the platform's homepage.
@@ -166,6 +174,7 @@ export async function runBrowserAgent(args: {
   llm: LLMProvider;
   headless?: boolean;
   storageState?: string;
+  loginCredentials?: { email: string; password: string };
   onJobsFound?: (jobs: BrowserAgentJob[]) => Promise<{ new: number; duplicate: number }>;
   onEvent?: (kind: string, message: string) => Promise<void>;
   onBlocked?: (reason: ChallengeKind | 'transport' | 'unknown', marker: string | null) => Promise<void>;
@@ -173,6 +182,8 @@ export async function runBrowserAgent(args: {
   const { platform, platformUrl, queries, profile, llm } = args;
   const emit = args.onEvent ?? (async () => {});
   const onBlocked = args.onBlocked ?? (async () => {});
+
+  const loginCredentials = args.loginCredentials;
 
   let totalNew = 0;
   let totalDup = 0;
@@ -190,7 +201,7 @@ export async function runBrowserAgent(args: {
 
   const messages: ChatMessage[] = [
     { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: buildAgentPrompt(platform, profile, queries) },
+    { role: 'user', content: buildAgentPrompt(platform, profile, queries, loginCredentials) },
   ];
 
   try {
