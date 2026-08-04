@@ -354,10 +354,18 @@ export function registerBuiltinHandlers(): void {
         // like Indeed require the user to complete the OAuth flow inside
         // the browser. The whitelist is intentionally narrow — see
         // OAUTH_ALLOWED_ORIGINS in session-capture-policy.ts.
+        //
+        // IMPORTANT: only block *top-level* navigation. Sub-resources
+        // (CSS, JS, fonts, images, XHR) come from CDNs (CloudFront,
+        // gstatic, etc.) and the user's Google account. Blocking them
+        // breaks the page layout — the HTML loads but everything is
+        // unstyled and unclickable. Use request.isNavigationRequest()
+        // to distinguish top-level navigations from sub-resources.
         const { shouldAllowNavigation } = await import('./session-capture-policy.js');
         await context.route('**/*', async (route) => {
-          const url = route.request().url();
-          if (!shouldAllowNavigation(url, approvedOrigin)) {
+          const request = route.request();
+          const url = request.url();
+          if (request.isNavigationRequest() && !shouldAllowNavigation(url, approvedOrigin)) {
             await route.abort('blockedbyclient');
             return;
           }
