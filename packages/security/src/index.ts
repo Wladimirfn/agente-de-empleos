@@ -9,3 +9,14 @@ export {
   persistStorageState,
 } from './credentials.js';
 export type { CredentialSummary, CredentialPlaintext, LoginStatus } from './credentials.js';
+export {
+  createSessionCapture,
+  getSessionCapture,
+  setSessionReady,
+  setSessionCompleted,
+  setSessionUserCompleted,
+  setSessionFailed,
+  expireStaleSessions,
+  SESSION_TTL_MS,
+} from './session-capture.js';
+export type { SessionCapture, SessionStatus } from './session-capture.js';

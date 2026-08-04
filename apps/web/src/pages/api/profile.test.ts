@@ -56,6 +56,7 @@ vi.mock('@employment-agent/database/schema', () => ({
   agentConfirmations: 'agent_confirmations',
   platformCredentials: 'platform_credentials',
   systemSecrets: 'system_secrets',
+  sessionCaptures: 'session_captures',
 }));
 
 const { DELETE, GET } = await import('./profile.js');
@@ -142,6 +143,7 @@ describe('DELETE /api/profile', () => {
     const clearedTables = deleteCalls.map((c) => c.table);
     expect(clearedTables).toContain('platform_credentials');
     expect(clearedTables).toContain('system_secrets');
+    expect(clearedTables).toContain('session_captures');
   });
 
   it('does not touch llm_settings or scan_settings (device-level config preserved)', async () => {

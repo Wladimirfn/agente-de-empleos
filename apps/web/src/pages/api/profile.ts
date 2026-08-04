@@ -19,6 +19,7 @@ import {
   agentConfirmations,
   platformCredentials,
   systemSecrets,
+  sessionCaptures,
 } from '@employment-agent/database/schema';
 import { eq } from 'drizzle-orm';
 import { generateMasterKey } from '@employment-agent/security';
@@ -153,6 +154,7 @@ export const DELETE: APIRoute = async () => {
     //    starts with no PII and no access to the previous sessions.
     //    The master key is regenerated transparently on the next save.
     await tx.delete(platformCredentials);
+    await tx.delete(sessionCaptures);
     await tx.delete(systemSecrets);
   });
 
