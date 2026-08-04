@@ -313,6 +313,14 @@ export function registerBuiltinHandlers(): void {
         launchedBrowser = await chromium.connectOverCDP(`http://127.0.0.1:${launched.cdpPort}`);
         const context = launchedBrowser.contexts()[0] ?? await launchedBrowser.newContext();
 
+        // Reuse the existing page if Chrome opened with one (real Chrome
+        // gives us a default tab). If the context is empty for some reason,
+        // create a new page. Without this, calling newPage() always opens
+        // a NEW tab behind the user's visible one, so they'd see whatever
+        // page Chrome happened to launch with instead of the platform.
+        const pages = context.pages();
+        const page = pages[0] ?? await context.newPage();
+
         // Block navigation outside the approved origin while the user is
         // logging in. We DO allow the well-known OAuth providers here
         // (Google, Apple, Facebook, Microsoft, GitHub) because platforms
@@ -329,7 +337,6 @@ export function registerBuiltinHandlers(): void {
           await route.continue();
         });
 
-        const page = await context.newPage();
         await page.goto(approvedOrigin, { timeout: 30_000, waitUntil: 'domcontentloaded' });
 
         await events.emit({

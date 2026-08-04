@@ -56,7 +56,6 @@ export async function launchBrowser(opts: LaunchOptions): Promise<{ process: Chi
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-blink-features=AutomationControlled',
-    'about:blank',
   ];
   const process = spawn(opts.binaryPath, args, {
     detached: true,
