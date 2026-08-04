@@ -60,16 +60,22 @@ export const POST: APIRoute = async ({ request }) => {
   const platformUrl = PLATFORM_URLS[slug];
   if (!platformUrl) return json({ error: 'Unsupported platform for session capture.' }, 400);
 
-  // Reject if there's already an active session for this slug.
+  // Reject if there's already an active session for this slug. A session
+  // counts as active if its deadline is in the future AND it hasn't been
+  // cancelled/expired — the worker cleans up terminal rows later, but
+  // we treat terminal rows as reusable so the user can retry quickly.
   const now = new Date().toISOString();
-  const active = await db.select({ id: sessionCaptures.id })
+  const active = await db.select({ id: sessionCaptures.id, status: sessionCaptures.status })
     .from(sessionCaptures)
     .where(and(
       eq(sessionCaptures.slug, slug),
       gt(sessionCaptures.expiresAt, now),
     ));
   if (active.length > 0) {
-    return json({ error: 'There is already an active session for this platform. Cancel it before starting a new one.', sessionId: active[0]?.id }, 409);
+    const stillLive = active.find((row) => row.status === 'pending' || row.status === 'ready');
+    if (stillLive) {
+      return json({ error: 'There is already an active session for this platform. Cancel it before starting a new one.', sessionId: stillLive.id }, 409);
+    }
   }
 
   const session = await createSessionCapture(slug);

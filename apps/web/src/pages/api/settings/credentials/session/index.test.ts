@@ -4,6 +4,7 @@ const sessionStore = new Map<string, { id: string; slug: string; status: string;
 const activeSessionById = new Map<string, string>(); // maps slug -> active session id
 const enqueuedTasks: Array<{ type: string; payload: unknown }> = [];
 const userCompletedLog: string[] = [];
+const cancelledLog: string[] = [];
 
 vi.mock('@employment-agent/database', () => ({
   db: {
@@ -13,7 +14,7 @@ vi.mock('@employment-agent/database', () => ({
           const items = Array.from(activeSessionById.values())
             .map((id) => sessionStore.get(id))
             .filter((s): s is NonNullable<typeof s> => Boolean(s))
-            .map((s) => ({ id: s.id }));
+            .map((s) => ({ id: s.id, status: s.status }));
           return Promise.resolve(items);
         },
       }),
@@ -59,6 +60,17 @@ vi.mock('@employment-agent/security', () => ({
     const s = sessionStore.get(id);
     if (s) sessionStore.set(id, { ...s, status: 'failed', error });
   },
+  setSessionExpired: async (id: string) => {
+    const s = sessionStore.get(id);
+    if (s) sessionStore.set(id, { ...s, status: 'expired' });
+  },
+  setSessionCancelled: async (id: string) => {
+    const s = sessionStore.get(id);
+    if (s) {
+      sessionStore.set(id, { ...s, status: 'cancelled' });
+      cancelledLog.push(id);
+    }
+  },
   SESSION_TTL_MS: 5 * 60_000,
 }));
 
@@ -90,6 +102,17 @@ vi.mock('../../../../../../worker/src/session-capture.js', () => ({
     const s = sessionStore.get(id);
     if (s) sessionStore.set(id, { ...s, status: 'failed', error });
   },
+  setSessionExpired: async (id: string) => {
+    const s = sessionStore.get(id);
+    if (s) sessionStore.set(id, { ...s, status: 'expired' });
+  },
+  setSessionCancelled: async (id: string) => {
+    const s = sessionStore.get(id);
+    if (s) {
+      sessionStore.set(id, { ...s, status: 'cancelled' });
+      cancelledLog.push(id);
+    }
+  },
   SESSION_TTL_MS: 5 * 60_000,
 }));
 
@@ -102,6 +125,7 @@ vi.mock('../../../../../../worker/src/task-queue.js', () => ({
 
 const { POST, GET } = await import('./index.js');
 const { POST: completePost } = await import('./[id]/complete.js');
+const { POST: cancelPost } = await import('./[id]/cancel.js');
 
 const callStart = (slug: string) => POST({
   request: new Request('http://localhost/api/settings/credentials/session', { method: 'POST', body: JSON.stringify({ slug }) }),
@@ -117,12 +141,18 @@ const callComplete = (id: string) => completePost({
   request: new Request(`http://localhost/api/settings/credentials/session/${id}/complete`, { method: 'POST' }),
 } as never);
 
+const callCancel = (id: string) => cancelPost({
+  params: { id },
+  request: new Request(`http://localhost/api/settings/credentials/session/${id}/cancel`, { method: 'POST' }),
+} as never);
+
 describe('POST /api/settings/credentials/session', () => {
   beforeEach(() => {
     sessionStore.clear();
     activeSessionById.clear();
     enqueuedTasks.length = 0;
     userCompletedLog.length = 0;
+    cancelledLog.length = 0;
   });
 
   it('enqueues a CAPTURE_SESSION task and returns the session id', async () => {
@@ -157,6 +187,15 @@ describe('POST /api/settings/credentials/session', () => {
     const response = await callStart('indeed');
     expect(response.status).toBe(409);
     expect(enqueuedTasks).toHaveLength(1);
+  });
+
+  it('allows a new session once the previous one is cancelled', async () => {
+    const first = await callStart('indeed');
+    const { sessionId } = await first.json() as { sessionId: string };
+    await callCancel(sessionId);
+    const second = await callStart('indeed');
+    expect(second.status).toBe(200);
+    expect(enqueuedTasks).toHaveLength(2);
   });
 });
 
@@ -197,5 +236,40 @@ describe('POST /api/settings/credentials/session/:id/complete', () => {
     const response = await callComplete(sessionId);
     expect(response.status).toBe(200);
     expect(userCompletedLog).toEqual([sessionId]);
+  });
+});
+
+describe('POST /api/settings/credentials/session/:id/cancel', () => {
+  beforeEach(() => {
+    sessionStore.clear();
+    activeSessionById.clear();
+    enqueuedTasks.length = 0;
+    cancelledLog.length = 0;
+  });
+
+  it('marks the session as cancelled so the worker exits its poll loop', async () => {
+    const start = await callStart('indeed');
+    const { sessionId } = await start.json() as { sessionId: string };
+    const response = await callCancel(sessionId);
+    expect(response.status).toBe(200);
+    const payload = await response.json() as { status: string };
+    expect(payload.status).toBe('cancelled');
+    expect(cancelledLog).toEqual([sessionId]);
+  });
+
+  it('returns 404 for unknown session ids', async () => {
+    const response = await callCancel('does-not-exist');
+    expect(response.status).toBe(404);
+  });
+
+  it('is idempotent on an already-cancelled session', async () => {
+    const start = await callStart('indeed');
+    const { sessionId } = await start.json() as { sessionId: string };
+    await callCancel(sessionId);
+    cancelledLog.length = 0;
+    const response = await callCancel(sessionId);
+    expect(response.status).toBe(200);
+    // Second cancel is a no-op — cancelledLog not touched.
+    expect(cancelledLog).toHaveLength(0);
   });
 });

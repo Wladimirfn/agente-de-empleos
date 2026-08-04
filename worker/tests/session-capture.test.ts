@@ -14,6 +14,8 @@ const {
   setSessionUserCompleted,
   setSessionCompleted,
   setSessionFailed,
+  setSessionExpired,
+  setSessionCancelled,
   expireStaleSessions,
   SESSION_TTL_MS,
 } = await import('@employment-agent/security');
@@ -82,5 +84,42 @@ describe('session capture DB ops', () => {
 
   it('returns null for unknown session ids', async () => {
     expect(await getSessionCapture('does-not-exist')).toBeNull();
+  });
+
+  it('setSessionExpired flips status to expired', async () => {
+    const session = await createSessionCapture('indeed');
+    await setSessionExpired(session.id);
+    const reloaded = await getSessionCapture(session.id);
+    expect(reloaded?.status).toBe('expired');
+  });
+
+  it('setSessionCancelled flips status to cancelled', async () => {
+    const session = await createSessionCapture('indeed');
+    await setSessionCancelled(session.id);
+    const reloaded = await getSessionCapture(session.id);
+    expect(reloaded?.status).toBe('cancelled');
+  });
+
+  it('derives expired status when the deadline has passed but the row is still pending', async () => {
+    const session = await createSessionCapture('indeed');
+    // Force the deadline into the past.
+    const past = new Date(Date.now() - 1000).toISOString();
+    await db.update(sessionCaptures)
+      .set({ expiresAt: past })
+      .where((await import('drizzle-orm')).eq(sessionCaptures.id, session.id));
+    const reloaded = await getSessionCapture(session.id);
+    expect(reloaded?.status).toBe('expired');
+  });
+
+  it('keeps a final status (failed, cancelled) even after the deadline', async () => {
+    const session = await createSessionCapture('indeed');
+    await setSessionFailed(session.id, 'browser crashed');
+    const past = new Date(Date.now() - 1000).toISOString();
+    await db.update(sessionCaptures)
+      .set({ expiresAt: past })
+      .where((await import('drizzle-orm')).eq(sessionCaptures.id, session.id));
+    const reloaded = await getSessionCapture(session.id);
+    // 'failed' is terminal — we don't shadow it with 'expired'.
+    expect(reloaded?.status).toBe('failed');
   });
 });
