@@ -2,6 +2,8 @@ export * from './candidate.js';
 export * from './document.js';
 export * from './platform.js';
 export * from './platform-block.js';
+export * from './platform-credential.js';
+export * from './system-secret.js';
 export * from './jobs.js';
 export * from './agent.js';
 export * from './task-queue.js';

@@ -78,6 +78,20 @@
       "when": 1785730000000,
       "tag": "0010_agent_confirmations",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1785800000000,
+      "tag": "0011_platform_blocks",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1785900000000,
+      "tag": "0012_credentials_and_master_key",
+      "breakpoints": true
     }
   ]
 }

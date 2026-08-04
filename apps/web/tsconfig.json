@@ -1,5 +1,20 @@
 {
   "extends": "astro/tsconfigs/strict",
+  "compilerOptions": {
+    "baseUrl": "../..",
+    "paths": {
+      "@employment-agent/database": ["./packages/database/src/index.ts"],
+      "@employment-agent/database/*": ["./packages/database/src/*"],
+      "@employment-agent/domain": ["./packages/domain/src/index.ts"],
+      "@employment-agent/domain/*": ["./packages/domain/src/*"],
+      "@employment-agent/llm": ["./packages/llm/src/index.ts"],
+      "@employment-agent/llm/*": ["./packages/llm/src/*"],
+      "@employment-agent/security": ["./packages/security/src/index.ts"],
+      "@employment-agent/security/*": ["./packages/security/src/*"],
+      "@employment-agent/shared": ["./packages/shared/src/index.ts"],
+      "@employment-agent/shared/*": ["./packages/shared/src/*"]
+    }
+  },
   "include": ["src/**/*", "astro.config.mjs"],
   "exclude": ["node_modules", "dist"]
 }

@@ -404,6 +404,8 @@ export function registerBuiltinHandlers(): void {
     if (queries.length === 0) queries.push('mantención', 'refrigeración');
 
     const { runBrowserAgent } = await import('./browser-agent.js');
+    const { loadCredentialPlaintext } = await import('@employment-agent/security');
+    const credential = await loadCredentialPlaintext(payload.skillSlug);
     const result = await runBrowserAgent({
       platform: payload.skillSlug,
       platformUrl: payload.platformUrl,
@@ -411,6 +413,8 @@ export function registerBuiltinHandlers(): void {
       profile,
       llm,
       headless: false, // Headed so user can solve CAPTCHAs
+      loginCredentials: credential ? { email: credential.email, password: credential.password } : undefined,
+      storageState: credential?.storageState ?? undefined,
       onJobsFound: async (agentJobs) => {
         let newC = 0, dupC = 0;
         for (const job of agentJobs) {

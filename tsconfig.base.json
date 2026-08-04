@@ -30,7 +30,9 @@
       "@employment-agent/browser": ["./packages/browser/src/index.ts"],
       "@employment-agent/browser/*": ["./packages/browser/src/*"],
       "@employment-agent/shared": ["./packages/shared/src/index.ts"],
-      "@employment-agent/shared/*": ["./packages/shared/src/*"]
+      "@employment-agent/shared/*": ["./packages/shared/src/*"],
+      "@employment-agent/security": ["./packages/security/src/index.ts"],
+      "@employment-agent/security/*": ["./packages/security/src/*"]
     }
   },
   "exclude": ["node_modules", "dist", ".astro"]

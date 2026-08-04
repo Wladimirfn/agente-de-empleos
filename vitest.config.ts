@@ -31,6 +31,7 @@ export default defineConfig({
       '@employment-agent/skill-runtime': path.resolve(__dirname, 'packages/skill-runtime/src'),
       '@employment-agent/browser': path.resolve(__dirname, 'packages/browser/src'),
       '@employment-agent/shared': path.resolve(__dirname, 'packages/shared/src'),
+      '@employment-agent/security': path.resolve(__dirname, 'packages/security/src'),
     },
     conditions: ['node', 'import', 'module', 'default'],
   },

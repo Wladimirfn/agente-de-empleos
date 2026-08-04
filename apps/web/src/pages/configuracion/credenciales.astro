@@ -1,0 +1,9 @@
+---
+import Base from '../../layouts/Base.astro';
+import PageHeader from '../../components/ui/PageHeader.astro';
+import CredentialsSection from '../../components/islands/CredentialsSection';
+---
+<Base title="Credenciales | Employment Agent" activeRoute="/configuracion">
+  <PageHeader title="Credenciales de plataformas" description="Guarda tus credenciales para que el agente navegue con tu sesión iniciada. Se cifran con AES-GCM en la base de datos." />
+  <CredentialsSection client:load />
+</Base>
