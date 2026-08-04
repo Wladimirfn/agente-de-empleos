@@ -5,6 +5,7 @@ import { createSkillContext } from '@employment-agent/skill-runtime';
 import { isApprovedOrigin } from './browser-tools.js';
 import type { CandidateProfile } from '@employment-agent/domain';
 import type { LLMProvider } from '@employment-agent/llm';
+import type { BrowserId } from './browser-detector.js';
 import { db } from '@employment-agent/database';
 import { candidateProfiles, candidateExperiences, candidateSkills, candidateTargetRoles, jobs, platforms, llmSettings, jobMatches, matchFeedback } from '@employment-agent/database/schema';
 import { eq, and, isNull, sql, desc } from 'drizzle-orm';
@@ -425,6 +426,38 @@ export function registerBuiltinHandlers(): void {
       }
     };
   registerHandler('CAPTURE_SESSION', captureSession);
+
+  registerHandler('LAUNCH_BROWSER', async (task) => {
+    const payload = JSON.parse(task.payloadJson) as { browserId?: string };
+    const { detectAvailableBrowsers, pickDefaultBrowser, findBrowser, defaultProfileDir } = await import('./browser-detector.js');
+    const { launchBrowser } = await import('./browser-launcher.js');
+
+    const browser = payload.browserId
+      ? findBrowser(payload.browserId as BrowserId)
+      : pickDefaultBrowser();
+    if (!browser) {
+      const available = detectAvailableBrowsers();
+      throw new Error(
+        `No supported browser found. Install Brave, Chrome, Edge, or Comet. Detected: ${available.map((b) => b.id).join(', ') || 'none'}.`
+      );
+    }
+
+    const profileDir = defaultProfileDir(browser.id);
+    if (!profileDir) {
+      throw new Error(`No default profile dir for ${browser.id} on this OS.`);
+    }
+
+    const launched = await launchBrowser({
+      browserId: browser.id,
+      binaryPath: browser.binaryPath,
+      profileDir,
+    });
+    await events.emit({
+      kind: 'launch_browser_success',
+      message: `${browser.id} launched with debug port ${launched.cdpPort}.`,
+      payload: { browser: browser.id, port: launched.cdpPort, profileDir },
+    });
+  });
 
   registerHandler('SCAN_ACTIVE_PLATFORMS', async (task) => {
     const payload = JSON.parse(task.payloadJson) as { triggeredBy?: string };

@@ -48,6 +48,8 @@ export default function CredentialsSection() {
 
   const [session, setSession] = useState<SessionState | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
+  const [launchingBrowser, setLaunchingBrowser] = useState(false);
+  const [launchMessage, setLaunchMessage] = useState<string | null>(null);
 
   async function refresh() {
     try {
@@ -174,6 +176,28 @@ export default function CredentialsSection() {
     setSession({ ...session, status: 'cancelled' });
   }
 
+  async function handleLaunchBrowser() {
+    setLaunchingBrowser(true);
+    setLaunchMessage('Cerrá Brave si está abierto, después dale click acá.');
+    try {
+      const res = await fetch('/api/settings/launch-browser', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setLaunchMessage(`Error: ${data.error ?? res.statusText}`);
+      } else {
+        setLaunchMessage('Brave launching… esperá unos segundos y dale "Capturar sesión".');
+      }
+    } catch (err) {
+      setLaunchMessage(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setLaunchingBrowser(false);
+    }
+  }
+
   const knownWithStatus = catalog.map((k) => ({
     slug: k.slug,
     label: k.displayName,
@@ -264,6 +288,19 @@ export default function CredentialsSection() {
           Abrimos un navegador para que te loguees manualmente (Google, Facebook, 2FA, lo que
           sea). Cuando termines, tocá &quot;Listo&quot; y guardamos tus cookies cifradas.
         </p>
+        <div className="mb-3 flex items-center gap-2 rounded border border-border bg-background/40 p-2">
+          <button
+            type="button"
+            onClick={handleLaunchBrowser}
+            disabled={launchingBrowser}
+            className="rounded border border-accent/40 px-2 py-1 text-xs text-accent hover:bg-accent/10 disabled:opacity-50"
+          >
+            {launchingBrowser ? 'Lanzando…' : 'Abrir Brave con debug port'}
+          </button>
+          <span className="text-xs text-fg-muted">
+            {launchMessage ?? 'Cerrá tu Brave actual y dale click. El agent va a abrir uno nuevo con debug port para que el flow de login use el mismo browser.'}
+          </span>
+        </div>
         <ul className="space-y-2">
           {knownWithStatus.map((k) => (
             <li key={k.slug} className="flex items-center justify-between rounded border border-border bg-background/40 px-3 py-2 text-sm">
