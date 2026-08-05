@@ -152,7 +152,11 @@ export async function launchBrowser(opts: LaunchOptions): Promise<{ pid: number;
   const extraFlags = [
     '--no-first-run',
     '--no-default-browser-check',
-    '--disable-blink-features=AutomationControlled',
+    // NOTE: do NOT pass --disable-blink-features=AutomationControlled.
+    // Chrome/Brave flag it as "affects stability and security" and warn
+    // every launch. With a real profile + real cookies the session
+    // already passes bot checks; lying about navigator.webdriver buys
+    // nothing and triggers the warning.
     ...browserSpecificFlags(opts.browserId),
   ];
 

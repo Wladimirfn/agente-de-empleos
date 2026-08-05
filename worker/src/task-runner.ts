@@ -620,37 +620,68 @@ export function registerBuiltinHandlers(): void {
     const { chromium } = await import('playwright');
     const credential = await loadCredentialPlaintext(payload.skillSlug);
 
-    // If the user has a real browser profile for this platform, attach
-    // to it via CDP. They're already logged in, so the agent can scan
-    // without prompting for credentials or hitting Google's automation
-    // detectors. Falls back to Playwright Chromium if no profile exists.
+    // Attach to a real browser. Three escalating strategies, in order:
+    //
+    //   1. CDP attach to whatever is already listening on 9222. This is
+    //      the `npm run launch:brave` flow — user ran the launcher,
+    //      has their normal Brave session with their cookies, the worker
+    //      just connects. Works even WITHOUT a captured credential.
+    //
+    //   2. Launch a dedicated instance with the captured profile path
+    //      (from a previous CAPTURE_SESSION). This is what makes the
+    //      session survive a worker restart — profile has cookies.
+    //
+    //   3. Playwright's bundled Chromium. Last resort: Google will
+    //      detect the TLS fingerprint and block login flows.
+    //
+    // Step 1 used to be gated on credential.browserPath existing, which
+    // meant the user's first scan after install always fell through to
+    // step 3 and failed. The condition was wrong: launching Brave via
+    // npm run launch:brave is independent of whether any platform has
+    // a captured credential yet.
     let realBrowser: import('playwright').Browser | null = null;
     let browserProc: { pid: number; cdpPort: number } | null = null;
-    if (credential?.browserPath && credential?.profilePath) {
+
+    // Strategy 1: attach to the already-running CDP browser.
+    try {
+      realBrowser = await connectToBrowser();
+      if (realBrowser) {
+        await events.emit({
+          kind: 'real_browser_attached',
+          message: `Conectado al navegador ya corriendo vía CDP (perfil del usuario).`,
+          payload: { source: 'cdp-existing', slug: payload.skillSlug },
+        });
+      }
+    } catch (err) {
+      // connectToBrowser returns null on failure; this catch is for the
+      // unexpected case where connectOverCDP itself throws.
+      await events.emit({
+        kind: 'real_browser_attach_error',
+        message: `CDP attach falló: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+
+    // Strategy 2: launch a dedicated browser with the captured profile.
+    if (!realBrowser && credential?.browserPath && credential?.profilePath) {
       const browser = findBrowser(credential.browserId as Parameters<typeof findBrowser>[0] ?? null);
       if (browser) {
         try {
-          // Try attaching to an already-running instance first.
-          realBrowser = await connectToBrowser();
-          if (!realBrowser) {
-            // Not running — launch with the user's profile.
-            const launched = await launchBrowser({
-              browserId: browser.id,
-              binaryPath: credential.browserPath,
-              profileDir: credential.profilePath,
-            });
-            browserProc = launched;
-            realBrowser = await chromium.connectOverCDP(`http://127.0.0.1:${launched.cdpPort}`);
-          }
+          const launched = await launchBrowser({
+            browserId: browser.id,
+            binaryPath: credential.browserPath,
+            profileDir: credential.profilePath,
+          });
+          browserProc = launched;
+          realBrowser = await chromium.connectOverCDP(`http://127.0.0.1:${launched.cdpPort}`);
           await events.emit({
             kind: 'real_browser_attached',
-            message: `Conectado a ${browser.id} con perfil guardado de ${payload.skillSlug}.`,
+            message: `Lanzado ${browser.id} con perfil guardado de ${payload.skillSlug}.`,
             payload: { browser: browser.id, slug: payload.skillSlug },
           });
         } catch (err) {
           await events.emit({
             kind: 'real_browser_fallback',
-            message: `Falló attach a ${credential.browserId}. Usando Chromium de Playwright. ${err instanceof Error ? err.message : String(err)}`,
+            message: `Falló launch dedicado. Usando lo que haya disponible. ${err instanceof Error ? err.message : String(err)}`,
           });
           realBrowser = null;
         }
