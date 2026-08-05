@@ -35,22 +35,23 @@ const FLAGS_BY_BROWSER = {
   brave: [
     '--disable-brave-shields',
     '--disable-features=BraveShields,BraveShieldsEnabled,BraveAdBlock,BraveAdblockCosmeticFiltering,BraveAdBlockCookieConsent',
-    '--disable-blink-features=AutomationControlled',
     '--no-first-run',
     '--no-default-browser-check',
+    // NOTE: do NOT pass --disable-blink-features=AutomationControlled.
+    // Chrome/Brave flag it as "affects stability and security" and show a
+    // warning every launch. With a real user profile + real cookies, the
+    // session already passes Indeed/Google bot checks; lying about
+    // navigator.webdriver buys nothing and triggers the warning.
   ],
   chrome: [
-    '--disable-blink-features=AutomationControlled',
     '--no-first-run',
     '--no-default-browser-check',
   ],
   edge: [
-    '--disable-blink-features=AutomationControlled',
     '--no-first-run',
     '--no-default-browser-check',
   ],
   comet: [
-    '--disable-blink-features=AutomationControlled',
     '--no-first-run',
     '--no-default-browser-check',
   ],
@@ -104,6 +105,40 @@ async function isCDPAvailable(port) {
     }
   }
   return false;
+}
+
+/**
+ * Detect if a browser is ALREADY running on the system (with or without
+ * CDP). If it is, launching a second instance causes two browsers to
+ * coexist — the new one with the shield-disable flags we want, and the
+ * old one without them, which is exactly the "ERR_BLOCKED_BY_CLIENT on
+ * localhost" + "agent doesn't work" failure mode the user reported.
+ *
+ * We refuse to launch a second instance and tell the user to close
+ * the existing one first.
+ */
+async function isBrowserProcessRunning(browserId) {
+  const os = platform();
+  const exeNames = {
+    win32: { brave: 'brave.exe', chrome: 'chrome.exe', edge: 'msedge.exe', comet: 'comet.exe' },
+    darwin: { brave: 'Brave Browser', chrome: 'Google Chrome', edge: 'Microsoft Edge', comet: 'Comet' },
+    linux: { brave: 'brave-browser', chrome: 'chrome', edge: 'msedge', comet: 'comet' },
+  };
+  const exe = exeNames[os]?.[browserId];
+  if (!exe) return false;
+  try {
+    if (os === 'win32') {
+      const out = execSync(`tasklist /FI "IMAGENAME eq ${exe}" /NH`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      // tasklist prints "INFO: No tasks are running..." when nothing matches;
+      // otherwise it prints lines like "brave.exe       12345 Console    1   123,456 K".
+      return out.toLowerCase().includes(exe.toLowerCase());
+    }
+    // Mac/Linux: pgrep returns 0 if any process matches.
+    execSync(`pgrep -f "${exe}"`, { stdio: ['ignore', 'ignore', 'ignore'] });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function launchWindows(browserPath, profileDir, port, flags) {
@@ -162,12 +197,41 @@ async function main() {
 
   if (!profileDir || !existsSync(profileDir)) {
     console.error(`Profile dir not found for ${browserId} at ${profileDir}`);
+    console.error(`On Windows, brave.exe / chrome.exe store the profile under %LOCALAPPDATA%.`);
+    console.error(`If you installed Brave in a non-standard location, set the path in BROWSER_PATHS.`);
     process.exit(1);
   }
 
   if (await isCDPAvailable(port)) {
     console.log(`Browser already running with CDP on port ${port}. Nothing to do.`);
     process.exit(0);
+  }
+
+  // The browser may be running WITHOUT --remote-debugging-port (the user
+  // opened it manually). Launching a second instance leads to two
+  // coexisting browsers: the new one with our shield-disable flags, and
+  // the old one with default shields ON — exactly the "localhost
+  // blocked" + "agent doesn't work" failure mode. Refuse and tell the
+  // user what to do.
+  const exeNames = {
+    win32: { brave: 'brave.exe', chrome: 'chrome.exe', edge: 'msedge.exe', comet: 'comet.exe' },
+    darwin: { brave: 'Brave Browser', chrome: 'Google Chrome', edge: 'Microsoft Edge', comet: 'Comet' },
+    linux: { brave: 'brave-browser', chrome: 'chrome', edge: 'msedge', comet: 'comet' },
+  };
+  const exe = exeNames[os]?.[browserId] ?? browserId;
+  if (await isBrowserProcessRunning(browserId)) {
+    console.error(`\nERROR: ${browserId} is already running without remote debugging enabled.`);
+    console.error(`Launching a second instance would cause two browsers to coexist (one with`);
+    console.error(`shields ON, one with shields OFF) and break localhost + the agent.`);
+    console.error('');
+    if (os === 'win32') {
+      console.error(`Fix: close every ${exe} window, then re-run this script.`);
+      console.error(`     (Task Manager → search "${exe}" → End task if any orphan stays.)`);
+    } else {
+      console.error(`Fix: kill every "${exe}" process, then re-run this script.`);
+      console.error(`     pkill -f "${exe}"   (or close all windows manually)`);
+    }
+    process.exit(1);
   }
 
   console.log(`Launching ${browserId}...`);

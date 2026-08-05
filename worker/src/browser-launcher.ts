@@ -79,13 +79,16 @@ export function browserSpecificFlags(browserId: BrowserId): string[] {
     return [
       '--disable-brave-shields',
       '--disable-features=BraveShields,BraveShieldsEnabled,BraveAdBlock,BraveAdblockCosmeticFiltering,BraveAdBlockCookieConsent',
-      '--disable-blink-features=AutomationControlled',
       '--no-first-run',
       '--no-default-browser-check',
+      // NOTE: do NOT pass --disable-blink-features=AutomationControlled.
+      // Chrome/Brave flag it as "affects stability and security" and warn
+      // on every launch. With a real user profile + real cookies, the
+      // session already passes Indeed/Google bot checks; lying about
+      // navigator.webdriver buys nothing and triggers the warning.
     ];
   }
   return [
-    '--disable-blink-features=AutomationControlled',
     '--no-first-run',
     '--no-default-browser-check',
   ];
