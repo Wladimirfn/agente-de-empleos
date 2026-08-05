@@ -225,6 +225,24 @@ export async function runBrowserAgent(args: {
     existingBrowser: args.existingBrowser,
   });
 
+  // Diagnostic: report which browser context we ended up in. Helps the
+  // user understand when the agent's cookies are missing (e.g. they
+  // logged in to a window in context[3] but contexts[0] is empty).
+  if (args.existingBrowser) {
+    const contexts = args.existingBrowser.contexts();
+    const cookieSummary: string[] = [];
+    for (const ctx of contexts) {
+      try {
+        const cookies = await ctx.cookies();
+        cookieSummary.push(`ctx(${contexts.indexOf(ctx)}): ${cookies.length} cookies`);
+      } catch {
+        cookieSummary.push(`ctx(${contexts.indexOf(ctx)}): <unreadable>`);
+      }
+    }
+    await emit('agent_context_selected',
+      `Browser contexts: ${contexts.length}. ${cookieSummary.join('; ')}. Agent page created in the context with cookies for ${new URL(platformUrl).origin}.`);
+  }
+
   const messages: ChatMessage[] = [
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'user', content: buildAgentPrompt(platform, profile, queries, loginCredentials) },

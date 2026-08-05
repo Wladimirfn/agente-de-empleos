@@ -54,6 +54,46 @@ export function isApprovedOrigin(url: string, approvedOrigin: string): boolean {
   } catch { return false; }
 }
 
+/**
+ * Pick the context that already has cookies for the approved origin.
+ * When the user runs the agent on multiple platforms from one browser,
+ * they may have multiple contexts (one per window profile / incognito
+ * / etc). contexts[0] is not guaranteed to be the one with the user's
+ * session. Falling back to the first context when no match is found
+ * keeps us connected to whatever Brave has.
+ *
+ * "Has cookies for the approved origin" = at least one cookie whose
+ * domain matches or is parent of the approved origin (e.g. cookie on
+ * `.trabajando.cl` matches origin `https://www.trabajando.cl`). This
+ * mirrors how Chrome scopes session cookies.
+ */
+export async function pickContextForOrigin(
+  browser: import('playwright').Browser,
+  contexts: BrowserContext[],
+  approvedOrigin: string | undefined,
+): Promise<BrowserContext> {
+  if (!approvedOrigin || contexts.length === 1) return contexts[0]!;
+  let originHost = '';
+  try {
+    originHost = new URL(approvedOrigin).hostname;
+  } catch {
+    return contexts[0]!;
+  }
+  for (const ctx of contexts) {
+    try {
+      const cookies = await ctx.cookies();
+      const hasMatch = cookies.some((c) => {
+        const domain = c.domain.replace(/^\./, '');
+        return domain === originHost || originHost.endsWith(`.${domain}`) || domain.endsWith(`.${originHost}`);
+      });
+      if (hasMatch) return ctx;
+    } catch {
+      // Some contexts may not expose cookies() over CDP — skip them.
+    }
+  }
+  return contexts[0]!;
+}
+
 export function sanitizeUrl(url: string): string {
   try {
     const parsed = new URL(url);
@@ -126,9 +166,19 @@ export async function createBrowserTools(opts?: {
   const ownedPages: Page[] = [];
   if (isAttached) {
     const existing = browser.contexts();
-    context = existing[0] ?? await browser.newContext();
-    // Add a route guard for the approved origin. Real browser doesn't
-    // skip this — without the guard the agent could wander off-platform.
+    if (existing.length === 0) {
+      // No contexts at all — shouldn't happen for a real browser, but
+      // bail out so we don't create a phantom context the user can't
+      // see.
+      throw new Error('Connected browser has no contexts');
+    }
+    // When the user has multiple windows/profiles open (e.g. one for
+    // localhost, another for an unrelated work session), contexts[0]
+    // may not be the one with cookies for the platform we're about to
+    // scan. The agent then lands on the anonymous homepage even though
+    // the user is logged in. Pick the context whose cookies cover the
+    // approved origin; fall back to contexts[0] when none does.
+    context = await pickContextForOrigin(browser, existing, opts?.approvedOrigin);
     page = await context.newPage();
     ownedPages.push(page);
   } else {
