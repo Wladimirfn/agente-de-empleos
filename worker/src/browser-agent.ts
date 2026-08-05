@@ -101,7 +101,9 @@ Rules:
 12. When extracting jobs, scroll down to load more results if the page uses lazy loading or pagination.
 13. If the page has pagination, navigate through at least 2 pages of results per query.
 14. NEVER guess search-result URLs. Navigate ONLY to the platform homepage or to hrefs you actually see in the elements list. To search, use the page's own search input (type + press_enter) — guessing URLs wastes steps and usually fails.
-15. Your ONLY goal is to call save_jobs with real listings. Every step that doesn't move you toward visible job listings is wasted.`;
+15. Your ONLY goal is to call save_jobs with real listings. Every step that doesn't move you toward visible job listings is wasted.
+16. EXTRACT FROM THE SEARCH RESULTS CARDS. The visible job cards on a search results page already have title, company, location, and date. Do NOT click into individual job detail pages to extract more — Trabajando, Laborum, Computrabajo, Chiletrabajo, and similar sites require login to view job details, which will trigger login-required and end the scan. Save what you can see on the listing page.
+17. If the search results page shows a "ver más" / "siguiente" / pagination link, click it or use the next-page button rather than clicking into a job card. Clicking a job card is almost always the wrong move from a search results page.`;
 
 export function buildAgentPrompt(
   platform: string,
