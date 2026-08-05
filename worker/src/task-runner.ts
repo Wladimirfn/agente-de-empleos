@@ -44,15 +44,20 @@ async function ensurePlatform(slug: string, displayName: string, baseUrl?: strin
 
 /** Insert a job if it doesn't exist, or bump lastSeenAt if it does. Returns 'new' | 'duplicate'. */
 async function persistJob(platformId: number, job: {
-  externalId: string; title: string; company?: string; location?: string; url?: string; description?: string;
+  externalId: string; title: string; company?: string; location?: string; url?: string; description?: string; postedAt?: string;
 }): Promise<'new' | 'duplicate'> {
   const existing = await db
-    .select({ id: jobs.id })
+    .select({ id: jobs.id, postedAt: jobs.postedAt })
     .from(jobs)
     .where(and(eq(jobs.platformId, platformId), eq(jobs.externalId, job.externalId)))
     .limit(1);
   if (existing[0]) {
-    await db.update(jobs).set({ lastSeenAt: new Date().toISOString() }).where(eq(jobs.id, existing[0].id));
+    const update: Record<string, string | number | null> = { lastSeenAt: new Date().toISOString() };
+    // Only fill postedAt if we didn't have one before and the new job has
+    // it. We never overwrite a previously captured date — the platform's
+    // first publication date is the authoritative one.
+    if (!existing[0].postedAt && job.postedAt) update.postedAt = job.postedAt;
+    await db.update(jobs).set(update).where(eq(jobs.id, existing[0].id));
     return 'duplicate';
   }
   await db.insert(jobs).values({
@@ -63,6 +68,7 @@ async function persistJob(platformId: number, job: {
     location: job.location ?? null,
     url: job.url ?? null,
     description: job.description ?? null,
+    postedAt: job.postedAt ?? null,
   });
   return 'new';
 }
@@ -671,6 +677,7 @@ export function registerBuiltinHandlers(): void {
             location: job.location,
             url: job.url,
             description: job.description,
+            postedAt: job.postedAt,
           });
           if (r === 'new') newC++; else dupC++;
         }

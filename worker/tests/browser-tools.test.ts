@@ -63,4 +63,52 @@ describe('browser origin pinning', () => {
       await tools.close(); approved.close(); external.close();
     }
   }, 30_000);
+
+  it('lets sub-resources (CSS/JS) load from the approved origin so pages render with styles', async () => {
+    let cssHits = 0;
+    const approved = createServer((req, res) => {
+      if (req.url === '/style.css') {
+        cssHits++;
+        res.setHeader('Content-Type', 'text/css');
+        res.end('h1 { color: rgb(255, 0, 0); }');
+        return;
+      }
+      res.setHeader('Content-Type', 'text/html');
+      res.end('<link rel="stylesheet" href="/style.css"><h1>styled</h1>');
+    });
+    const approvedOrigin = await listen(approved);
+    const tools = await createBrowserTools({ headless: true, approvedOrigin });
+    try {
+      expect(await tools.navigate(`${approvedOrigin}/`)).toContain(approvedOrigin);
+      // Wait for the stylesheet to load — domcontentloaded doesn't include
+      // external stylesheets in Playwright's wait semantics.
+      const state = await tools.extractPage();
+      expect(state.url).toContain(approvedOrigin.replace('http://', ''));
+      // The stylesheet must have been fetched. If the route guard had been
+      // left intercepting sub-resources, cssHits would stay at 0 and the
+      // page would render as a wall of unstyled text.
+      expect(cssHits).toBeGreaterThan(0);
+      expect(state.text).toContain('styled');
+    } finally {
+      await tools.close(); approved.close();
+    }
+  }, 30_000);
+
+  it('trims postedAt to a short date string and strips oversize values', () => {
+    const jobs = sanitizeBrowserJobs([
+      { externalId: 'a', title: 'A', postedAt: '  hace 2 días  ' },
+      { externalId: 'b', title: 'B', postedAt: '' },
+      { externalId: 'c', title: 'C', postedAt: undefined },
+      { externalId: 'd', title: 'D', postedAt: '2026-08-04' },
+      // 200-char dump from a runaway model — should be stripped, not stored.
+      { externalId: 'e', title: 'E', postedAt: 'x'.repeat(200) },
+    ]);
+    const lookup = Object.fromEntries(jobs.map((j) => [j.externalId, j.postedAt]));
+    expect(lookup.a).toBe('hace 2 días');
+    expect('b' in lookup).toBe(true); // b still passes the filter
+    expect(lookup.b).toBeUndefined();
+    expect(lookup.c).toBeUndefined();
+    expect(lookup.d).toBe('2026-08-04');
+    expect(lookup.e).toBeUndefined();
+  });
 });

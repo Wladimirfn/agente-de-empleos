@@ -32,6 +32,12 @@ export interface BrowserAgentJob {
   location?: string;
   url?: string;
   description?: string;
+  /**
+   * When the offer was published on the platform (e.g. Indeed's
+   * `datePublished` or `relativeDate` like "Hoy" / "hace 2 días"). The
+   * ofertas page renders this so the user can sort by recency.
+   */
+  postedAt?: string;
 }
 
 const MAX_STEPS = 25;
@@ -42,12 +48,26 @@ export function safeActionName(value: unknown): string {
   return ACTIONS.has(action) ? action : 'unknown';
 }
 export function sanitizeBrowserJobs(jobs: unknown[]): BrowserAgentJob[] {
-  return sanitizeOutbound(jobs.filter((value) => {
+  const filtered = jobs.filter((value) => {
     const job = value as Record<string, unknown>;
     return typeof job.externalId === 'string' && typeof job.title === 'string'
       && !hasUrlCredentials(job.externalId)
       && (typeof job.url !== 'string' || !hasUrlCredentials(job.url));
-  })) as BrowserAgentJob[];
+  });
+  const normalized = filtered.map((value) => {
+    const job = { ...(value as Record<string, unknown>) };
+    // postedAt is user-visible metadata (a date string), not a secret; just
+    // coerce to trimmed string or strip. Anything longer than 64 chars is
+    // almost certainly the agent dumping a description by mistake.
+    const raw = typeof job.postedAt === 'string' ? job.postedAt.trim() : '';
+    if (raw.length === 0 || raw.length > 64) {
+      delete job.postedAt;
+    } else {
+      job.postedAt = raw;
+    }
+    return job;
+  });
+  return sanitizeOutbound(normalized) as unknown as BrowserAgentJob[];
 }
 
 const SYSTEM_PROMPT = `You are a browser agent controlling a web browser to search for jobs on a specific platform.
@@ -63,7 +83,7 @@ Available actions:
 - {"action":"scroll","direction":"up"|"down"} — scroll the page
 - {"action":"go_back"} — go back to previous page
 - {"action":"wait_human","message":"..."} — ask the human to solve a challenge (CAPTCHA, login). Use when you see a challenge you cannot solve.
-- {"action":"save_jobs","jobs":[...]} — save job listings you found. Each job: {"externalId":"...","title":"...","company":"...","location":"...","url":"...","description":"..."}. Use the job's URL or ID as externalId.
+- {"action":"save_jobs","jobs":[...]} — save job listings you found. Each job: {"externalId":"...","title":"...","company":"...","location":"...","url":"...","description":"...","postedAt":"..."}. postedAt is the date the offer was originally published on the platform (look for "Publicado hace X días", a date label on the card, or an absolute date near the title). Capture whichever form is visible — the ofertas page renders it next to the company/location so the user can see which offers are fresh. Use the job's URL or ID as externalId.
 - {"action":"done","summary":"..."} — you are finished. Summarize what you found.
 
 Rules:

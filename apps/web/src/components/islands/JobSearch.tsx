@@ -9,6 +9,8 @@ interface MatchedJob {
   location?: string;
   url?: string;
   description?: string;
+  /** When the offer was originally published on the platform. */
+  postedAt?: string;
   score: number;
   reasoning?: string;
   breakdown?: {
@@ -363,6 +365,7 @@ export default function JobSearch() {
                     </div>
                     <p className="mt-0.5 text-xs text-fg-muted">
                       {job.company ?? 'Empresa confidencial'}{job.location ? ` · ${job.location}` : ''}
+                      {job.postedAt ? ` · publicado ${job.postedAt}` : ''}
                     </p>
                     {job.description && (
                       <p className="mt-2 line-clamp-2 text-xs text-fg-muted leading-relaxed">

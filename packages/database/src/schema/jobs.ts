@@ -15,6 +15,13 @@ export const jobs = sqliteTable('jobs', {
   rawPayload: text('raw_payload'),
   firstSeenAt: text('first_seen_at').notNull().default(sql`CURRENT_TIMESTAMP`),
   lastSeenAt: text('last_seen_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+  /**
+   * When the offer was originally published on the platform. The browser-
+   * agent prompt instructs the LLM to capture this from the job card
+   * (Indeed: `datePublished` or `relativeDate`). Nullable because many
+   * platforms don't expose it and back-fills from rawPayload may not have it.
+   */
+  postedAt: text('posted_at'),
   hash: text('hash'),
 }, (t) => ({
   platformExternalUnique: uniqueIndex('jobs_platform_external_unique').on(t.platformId, t.externalId),

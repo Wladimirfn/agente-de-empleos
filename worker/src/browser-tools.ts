@@ -144,11 +144,21 @@ export async function createBrowserTools(opts?: {
   if (opts?.approvedOrigin) {
     await context.route('**/*', async (route) => {
       const request = route.request();
-      const navigation = request.isNavigationRequest();
+      // Only enforce the approved-origin policy on top-level navigation
+      // (HTML document requests). Sub-resources (CSS / JS / fonts / images /
+      // XHR) MUST load so the page renders correctly — without CSS Indeed
+      // (and most platforms) render as a wall of left-aligned text.
+      //
+      // The `route.fetch + route.fulfill` dance below also breaks sub-
+      // resource bodies in some Playwright builds (the fetch stream is
+      // consumed before fulfill), so we just pass sub-resources through
+      // unmodified with `route.continue()`.
+      if (!request.isNavigationRequest()) return route.continue();
+      const navigation = true;
       const block = async () => {
-        if (navigation) policyBlocked = true;
+        policyBlocked = true;
         await route.abort('blockedbyclient');
-        if (navigation) try {
+        try {
           const owner = request.frame().page();
           if (owner !== page) await owner.close();
         } catch { /* detached popup/frame */ }

@@ -391,6 +391,7 @@ export async function listMatches(args: { limit?: number } = {}): Promise<Matche
       jobLocation: jobs.location,
       jobUrl: jobs.url,
       jobDescription: jobs.description,
+      jobPostedAt: jobs.postedAt,
       platformSlug: platforms.slug,
     })
     .from(jobMatches)
@@ -426,6 +427,7 @@ export async function listMatches(args: { limit?: number } = {}): Promise<Matche
       location: r.jobLocation ?? undefined,
       url: r.jobUrl ?? undefined,
       description: r.jobDescription ?? undefined,
+      postedAt: r.jobPostedAt ?? undefined,
       score: r.score,
       reasoning,
       breakdown,
