@@ -2,25 +2,7 @@ import { useEffect, useState } from 'react';
 import { useStore } from '@nanostores/react';
 import { recentEvents } from '../../stores/activity.js';
 import { connectToEventStream } from '../../lib/sse-client.js';
-
-/**
- * Format an ISO timestamp in the browser's local timezone (es-CL locale so
- * dates render like "05 ago 2026, 05:55:20" — the worker stores UTC ISO
- * strings, which without this conversion read 4 hours ahead of Chile).
- */
-function formatLocalTime(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return iso;
-  return date.toLocaleString('es-CL', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  });
-}
+import { formatLocalDateTime } from '../../lib/date-format.js';
 
 export default function LiveFeed() {
   const events = useStore(recentEvents);
@@ -58,7 +40,7 @@ export default function LiveFeed() {
                   <span className="rounded bg-accent/20 text-accent px-2 py-0.5 text-xs font-mono">
                     {event.kind}
                   </span>
-                  <span className="text-xs text-muted">{formatLocalTime(event.occurredAt)}</span>
+                  <span className="text-xs text-muted">{formatLocalDateTime(event.occurredAt)}</span>
                 </div>
                 <div className="text-foreground">{event.message}</div>
               </li>

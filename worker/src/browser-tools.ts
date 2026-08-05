@@ -120,12 +120,17 @@ export async function createBrowserTools(opts?: {
   // The cookies/IndexedDB from the user-data-dir are already there.
   let context: BrowserContext;
   let page: Page;
+  // Track every page WE opened so close() can shut down only what we
+  // created. Without this, context.close() would kill the user's localhost
+  // tab too, and browser.close() would kill their entire Brave.
+  const ownedPages: Page[] = [];
   if (isAttached) {
     const existing = browser.contexts();
     context = existing[0] ?? await browser.newContext();
     // Add a route guard for the approved origin. Real browser doesn't
     // skip this — without the guard the agent could wander off-platform.
     page = await context.newPage();
+    ownedPages.push(page);
   } else {
     const contextOptions: Record<string, unknown> = {
       userAgent:
@@ -138,6 +143,7 @@ export async function createBrowserTools(opts?: {
     }
     context = await browser.newContext(contextOptions);
     page = await context.newPage();
+    ownedPages.push(page);
   }
   let policyBlocked = false;
   let lastApprovedUrl = opts?.approvedOrigin ?? '';
@@ -389,8 +395,18 @@ export async function createBrowserTools(opts?: {
     },
 
     async close(): Promise<void> {
-      await context.close().catch(() => undefined);
-      await browser.close().catch(() => undefined);
+      // Only shut down what WE opened. If the agent attached to the
+      // user's existing Brave via CDP (existingBrowser), the context and
+      // browser belong to the user — closing them would kill the user's
+      // localhost tab and the whole browser. Closing our owned pages
+      // leaves the user with one less tab and otherwise everything intact.
+      for (const p of ownedPages) {
+        await p.close().catch(() => undefined);
+      }
+      if (!isAttached) {
+        await context.close().catch(() => undefined);
+        await browser.close().catch(() => undefined);
+      }
     },
   };
 }
