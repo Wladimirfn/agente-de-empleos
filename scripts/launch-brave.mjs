@@ -141,6 +141,31 @@ async function isBrowserProcessRunning(browserId) {
   }
 }
 
+/**
+ * Use Chrome DevTools Protocol over HTTP to open a new tab pointing at
+ * the dev server. Avoids needing Playwright as a dep here and avoids
+ * opening a SECOND browser (which is what `start http://localhost:3000`
+ * from a .bat would do via the system default browser — that's why
+ * start-employment-agent.bat used to launch two Braves).
+ *
+ * The /json/new endpoint accepts ?url=... and returns the new target's
+ * metadata. We don't care about the body, just that it succeeded.
+ */
+async function openInitialTab(port, url) {
+  for (const host of ['127.0.0.1', 'localhost']) {
+    try {
+      const res = await fetch(`http://${host}:${port}/json/new?${encodeURIComponent(url)}`, {
+        method: 'PUT',
+        signal: AbortSignal.timeout(2000),
+      });
+      if (res.ok) return true;
+    } catch {
+      // Try next host
+    }
+  }
+  return false;
+}
+
 async function launchWindows(browserPath, profileDir, port, flags) {
   // PowerShell's Start-Process passes -ArgumentList as a single string; we
   // wrap each flag in double quotes. Flags with values (--foo=bar) are
@@ -253,6 +278,16 @@ async function main() {
     await new Promise(r => setTimeout(r, 500));
     if (await isCDPAvailable(port)) {
       console.log(`CDP ready on port ${port}`);
+      // Open the dev server in a new tab so the user does not need to
+      // type the URL. Uses the CDP HTTP API so we don't need Playwright
+      // as a runtime dep here. Idempotent — if the user already has a
+      // localhost tab, this just adds another one (harmless).
+      const devUrl = process.env.WEB_PORT ? `http://localhost:${process.env.WEB_PORT}` : 'http://localhost:3000';
+      if (await openInitialTab(port, devUrl)) {
+        console.log(`Opened ${devUrl} in a new tab`);
+      } else {
+        console.log(`CDP is up but could not auto-open a tab. Visit ${devUrl} manually.`);
+      }
       process.exit(0);
     }
   }
