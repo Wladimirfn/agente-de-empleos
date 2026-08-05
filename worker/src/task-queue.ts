@@ -90,3 +90,30 @@ export async function markRetrying(id: string, error: string, nextAttemptDelayMs
     })
     .where(eq(taskQueue.id, id));
 }
+
+/**
+ * Tasks left in 'running' after a worker restart (or crash) cannot still
+ * be alive — there is no worker holding their reference. Mark them failed
+ * so the next enqueue isn't blocked. Optional skillSlug scope so the
+ * worker boot sweep can be unrestricted while per-platform callers
+ * (enqueuePlatformScan) scope to their own slug.
+ *
+ * Returns the number of rows swept.
+ */
+export async function sweepStaleRunningTasks(opts: { skillSlug?: string; thresholdMs?: number } = {}): Promise<number> {
+  const thresholdMs = opts.thresholdMs ?? 10 * 60 * 1000;
+  const cutoff = new Date(Date.now() - thresholdMs).toISOString();
+  const slugFilter = opts.skillSlug ? sql`AND json_extract(${taskQueue.payloadJson}, '$.skillSlug') = ${opts.skillSlug}` : sql``;
+  const rows = await db
+    .update(taskQueue)
+    .set({
+      status: 'failed',
+      completedAt: new Date().toISOString(),
+      error: sql`COALESCE(${taskQueue.error}, '') || ${'[auto-cleanup] killed stale running task (no heartbeat within ' + (thresholdMs / 60000) + 'min)'}`,
+    })
+    .where(sql`${taskQueue.status} = 'running'
+      AND (${taskQueue.startedAt} IS NULL OR ${taskQueue.startedAt} < ${cutoff})
+      ${slugFilter}`)
+    .returning({ id: taskQueue.id });
+  return rows.length;
+}

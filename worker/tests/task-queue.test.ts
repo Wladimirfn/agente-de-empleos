@@ -7,7 +7,7 @@ process.env.DATABASE_PATH = join(mkdtempSync(join(tmpdir(), 'ea-queue-')), 'queu
 
 const { db, runMigrations, closeDb } = await import('@employment-agent/database');
 const { taskQueue } = await import('@employment-agent/database/schema');
-const { claimNextTask } = await import('../src/task-queue.js');
+const { claimNextTask, sweepStaleRunningTasks } = await import('../src/task-queue.js');
 
 beforeAll(() => runMigrations());
 beforeEach(() => db.delete(taskQueue));
@@ -52,5 +52,58 @@ describe('claimNextTask', () => {
 
     const claimed = await Promise.all([claimNextTask(), claimNextTask()]);
     expect(new Set(claimed.map((task) => task?.id))).toEqual(new Set(['first', 'second']));
+  });
+});
+
+describe('sweepStaleRunningTasks', () => {
+  async function addRunning(id: string, startedAt: string, slug = 'jobs') {
+    await db.insert(taskQueue).values({
+      id,
+      type: 'BROWSER_AGENT_SCAN',
+      payloadJson: JSON.stringify({ skillSlug: slug, platformUrl: 'https://jobs.example.com', triggeredBy: 'x' }),
+      status: 'running',
+      attempts: 0,
+      maxAttempts: 1,
+      scheduledAt: startedAt,
+      startedAt,
+    });
+  }
+
+  it('kills running tasks older than the threshold and leaves fresh ones alone', async () => {
+    const old = new Date(Date.now() - 60 * 60_000).toISOString();
+    const fresh = new Date().toISOString();
+    await addRunning('stale-1', old);
+    await addRunning('stale-2', old);
+    await addRunning('fresh-1', fresh);
+
+    const swept = await sweepStaleRunningTasks();
+    expect(swept).toBe(2);
+
+    const after = await db.select().from(taskQueue);
+    expect(after.find((t) => t.id === 'stale-1')?.status).toBe('failed');
+    expect(after.find((t) => t.id === 'stale-2')?.status).toBe('failed');
+    expect(after.find((t) => t.id === 'fresh-1')?.status).toBe('running');
+    expect(after.find((t) => t.id === 'stale-1')?.error).toContain('[auto-cleanup]');
+  });
+
+  it('respects a custom threshold so operators can tune the sweep', async () => {
+    const fiveSecAgo = new Date(Date.now() - 5_000).toISOString();
+    await addRunning('recent', fiveSecAgo);
+    // A 1-second threshold should sweep the 5-second-old task.
+    const swept = await sweepStaleRunningTasks({ thresholdMs: 1_000 });
+    expect(swept).toBe(1);
+    const after = await db.select().from(taskQueue);
+    expect(after[0]?.status).toBe('failed');
+  });
+
+  it('scopes by skillSlug so per-platform callers do not sweep unrelated tasks', async () => {
+    const old = new Date(Date.now() - 60 * 60_000).toISOString();
+    await addRunning('jobs-1', old, 'jobs');
+    await addRunning('other-1', old, 'other');
+    const swept = await sweepStaleRunningTasks({ skillSlug: 'jobs' });
+    expect(swept).toBe(1);
+    const after = await db.select().from(taskQueue);
+    expect(after.find((t) => t.id === 'jobs-1')?.status).toBe('failed');
+    expect(after.find((t) => t.id === 'other-1')?.status).toBe('running');
   });
 });

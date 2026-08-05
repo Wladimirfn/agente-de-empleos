@@ -148,15 +148,48 @@ export function platformScanTaskType(hasSkill: boolean, forceAgent = false): 'SC
 
 export type PlatformScanTaskType = 'SCAN_PLATFORM' | 'BROWSER_AGENT_SCAN';
 
-export async function enqueuePlatformScan(platform: { slug: string; url?: string }, triggeredBy: string, type: PlatformScanTaskType = 'BROWSER_AGENT_SCAN', context: { deepSearchRunId?: string; executor?: Pick<typeof db, 'all'> } = {}): Promise<string | null> {
+/**
+ * Tasks in 'running' for longer than this are considered zombies (the
+ * worker crashed, was killed, or lost its DB connection mid-scan) and
+ * should not block new enqueues. 10 minutes is well above the longest
+ * legitimate scan budget (browser-agent max 25 steps × a few seconds
+ * each, plus LLM scoring).
+ */
+export const STALE_RUNNING_THRESHOLD_MS = 10 * 60 * 1000;
+
+export async function enqueuePlatformScan(platform: { slug: string; url?: string }, triggeredBy: string, type: PlatformScanTaskType = 'BROWSER_AGENT_SCAN', context: { deepSearchRunId?: string; executor?: Pick<typeof db, 'all' | 'run'> } = {}): Promise<string | null> {
   const id = randomUUID();
   const payload = JSON.stringify({ skillSlug: platform.slug, ...(type === 'BROWSER_AGENT_SCAN' ? { platformUrl: new URL(platform.url!).origin } : {}), triggeredBy, ...(context.deepSearchRunId ? { deepSearchRunId: context.deepSearchRunId } : {}) });
-  const inserted = await (context.executor ?? db).all<{ id: string }>(sql`
+  const executor = context.executor ?? db;
+  // Step 1: kill zombies for this skillSlug. A 'running' task whose
+  // started_at is older than the threshold cannot still be alive — the
+  // worker that owned it has long since died. Marking them 'failed'
+  // makes the UI honest AND clears the gate for the new enqueue below.
+  // Limited to this skillSlug because a zombie for another platform
+  // should never affect ours (enqueuePlatformScan is per-slug anyway).
+  const staleCutoff = new Date(Date.now() - STALE_RUNNING_THRESHOLD_MS).toISOString();
+  await executor.run(sql`
+    UPDATE task_queue
+    SET status = 'failed',
+        completed_at = ${new Date().toISOString()},
+        error = COALESCE(error, '') || ${'[auto-cleanup] killed stale running task (no heartbeat within ' + (STALE_RUNNING_THRESHOLD_MS / 60000) + 'min)'}
+    WHERE status = 'running'
+      AND json_extract(payload_json, '$.skillSlug') = ${platform.slug}
+      AND (started_at IS NULL OR started_at < ${staleCutoff})
+  `);
+  // Step 2: enqueue only if no FRESH active task remains.
+  const inserted = await executor.all<{ id: string }>(sql`
     INSERT INTO task_queue (id, type, payload_json, status, attempts, max_attempts, scheduled_at)
     SELECT ${id}, ${type}, ${payload}, 'pending', 0, ${type === 'BROWSER_AGENT_SCAN' ? 1 : 3}, ${new Date().toISOString()}
     WHERE NOT EXISTS (
       SELECT 1 FROM task_queue
-      WHERE (${context.deepSearchRunId ?? null} IS NOT NULL OR type = ${type}) AND status IN ('pending', 'running', 'retrying')
+      WHERE (${context.deepSearchRunId ?? null} IS NOT NULL OR type = ${type}) AND (
+          status = 'pending'
+          OR status = 'retrying'
+          -- 'running' tasks must have started recently; anything older is a zombie
+          -- (already swept above for this slug, but the filter stays defensive).
+          OR (status = 'running' AND started_at >= ${staleCutoff})
+        )
         AND json_extract(payload_json, '$.skillSlug') = ${platform.slug}
     ) RETURNING id
   `);

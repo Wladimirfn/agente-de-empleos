@@ -65,7 +65,16 @@ describe('deep-search confirmation persistence', () => {
       { slug: 'paused', displayName: 'Paused', baseUrl: 'https://paused.example', status: 'paused' },
       { slug: 'broken', displayName: 'Broken', baseUrl: 'https://broken.example', status: 'broken' },
     ]);
-    await db.insert(taskQueue).values({ id: 'existing', type: 'SCAN_PLATFORM', payloadJson: JSON.stringify({ skillSlug: 'beta' }), status: 'running', attempts: 0, maxAttempts: 1, scheduledAt: start.toISOString() });
+    await db.insert(taskQueue).values({
+      id: 'existing', type: 'SCAN_PLATFORM',
+      payloadJson: JSON.stringify({ skillSlug: 'beta' }),
+      status: 'running', attempts: 0, maxAttempts: 1,
+      scheduledAt: start.toISOString(),
+      // claimNextTask always sets started_at atomically; the production
+      // code never leaves a running task without it. The sweep in
+      // enqueuePlatformScan treats NULL started_at as a zombie.
+      startedAt: new Date().toISOString(),
+    });
     const pending = await proposeDeepSearch(profileId, 'chat-a', start);
     const nextTurn = new Date(start.getTime() + 1_000);
     const accepted = await confirmDeepSearch(profileId, 'chat-a', 'sí!', nextTurn);
