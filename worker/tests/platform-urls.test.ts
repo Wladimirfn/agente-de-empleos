@@ -10,9 +10,12 @@ describe('platformUrlForSlug', () => {
     expect(platformUrlForSlug('trabajando')).toBe('https://www.trabajando.cl');
   });
 
-  it('uses .com for empleosaqua (not .cl)', () => {
-    // The actual Empleos Aqua site is at empleosaqua.com. Using .cl would 404.
-    expect(platformUrlForSlug('empleosaqua')).toBe('https://www.empleosaqua.com');
+  it('uses .cl for empleosaqua (the .com TLD does not resolve)', () => {
+    // Earlier this returned www.empleosaqua.com based on an old assumption.
+    // That hostname does not resolve (NXDOMAIN, 190.196.157.125 belongs to
+    // www.empleosaqua.cl). Confirmed by the wait_human surfacing the
+    // ERR_NAME_NOT_RESOLVED on the LLM agent.
+    expect(platformUrlForSlug('empleosaqua')).toBe('https://www.empleosaqua.cl');
   });
 
   it('falls back to www.<slug>.cl for unknown slugs', () => {
