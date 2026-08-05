@@ -49,10 +49,49 @@ describe('detectChallenge', () => {
   it('flags Spanish login walls', () => {
     const result = detectChallenge({
       url: 'https://example.com/account',
-      title: 'Mi cuenta',
+      title: 'Iniciar sesión - Example',
       text: 'Por favor ingresa tu email y contrasena para continuar.',
     });
-    expect(result).toEqual({ kind: 'login-required', marker: 'ingresa' });
+    expect(result).toEqual({ kind: 'login-required', marker: 'iniciar sesión' });
+  });
+
+  it('flags login when the URL is a known login path', () => {
+    const result = detectChallenge({
+      url: 'https://example.com/login?redirect_uri=/dashboard',
+      title: 'Dashboard',
+      text: 'Loading your dashboard...',
+    });
+    expect(result?.kind).toBe('login-required');
+  });
+
+  it('does NOT flag a logged-in homepage that has "Iniciar sesión" only in the nav bar', () => {
+    // Regression: previously the detector fired on body-text matches
+    // and stopped the agent on every successful scan. Real login walls
+    // appear in the page title or URL, not just in nav links.
+    const result = detectChallenge({
+      url: 'https://www.trabajando.cl/',
+      title: 'Trabajos y empleos en Chile, bolsa de trabajo, portal de empleo | Trabajando.com',
+      text: 'Iniciar sesión | Registrarse | Hola, María | Mis postulaciones | Salir | Ofertas de empleo ...',
+    });
+    expect(result).toBeNull();
+  });
+
+  it('does NOT flag job listing pages whose only "Sign in" mentions are nav links', () => {
+    const result = detectChallenge({
+      url: 'https://cl.indeed.com/jobs?q=desarrollador&l=Puerto+Montt',
+      title: 'Desarrollador jobs in Puerto Montt - Indeed',
+      text: 'Sign in | Postúlate en 1 click | 47 resultados | Senior Backend Developer ...',
+    });
+    expect(result).toBeNull();
+  });
+
+  it('does flag a page whose body has only "Sign in with Google" login options (not nav)', () => {
+    const result = detectChallenge({
+      url: 'https://example.com/auth',
+      title: 'Welcome',
+      text: 'Sign in with Google | Sign in with Apple | Sign in with email',
+    });
+    expect(result?.kind).toBe('login-required');
   });
 
   it('returns the first marker that matches (cloudflare wins over login)', () => {
