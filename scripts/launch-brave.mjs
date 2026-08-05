@@ -19,6 +19,43 @@ import { join } from 'node:path';
 
 const PORT = 9222;
 
+/**
+ * Browser flags applied at launch. These MUST match the flags the worker
+ * uses in `worker/src/browser-launcher.ts` so the manually-launched browser
+ * and the worker-launched one behave identically — otherwise the user sees
+ * localhost blocked (ERR_BLOCKED_BY_CLIENT) and the agent's Indeed navigation
+ * returns a half-rendered page that the LLM can't parse.
+ *
+ * Brave Shields in default mode:
+ *   - Treats some localhost resources as trackers (blocks the Astro dev UI).
+ *   - Blocks Indeed's anti-bot CSS/JS, leaving the page half-rendered.
+ *   - Strips fingerprinting headers that Indeed needs for a clean session.
+ */
+const FLAGS_BY_BROWSER = {
+  brave: [
+    '--disable-brave-shields',
+    '--disable-features=BraveShields,BraveShieldsEnabled,BraveAdBlock,BraveAdblockCosmeticFiltering,BraveAdBlockCookieConsent',
+    '--disable-blink-features=AutomationControlled',
+    '--no-first-run',
+    '--no-default-browser-check',
+  ],
+  chrome: [
+    '--disable-blink-features=AutomationControlled',
+    '--no-first-run',
+    '--no-default-browser-check',
+  ],
+  edge: [
+    '--disable-blink-features=AutomationControlled',
+    '--no-first-run',
+    '--no-default-browser-check',
+  ],
+  comet: [
+    '--disable-blink-features=AutomationControlled',
+    '--no-first-run',
+    '--no-default-browser-check',
+  ],
+};
+
 const BROWSER_PATHS = {
   win32: {
     brave: 'C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe',
@@ -69,10 +106,18 @@ async function isCDPAvailable(port) {
   return false;
 }
 
-async function launchWindows(browserPath, profileDir, port) {
+async function launchWindows(browserPath, profileDir, port, flags) {
+  // PowerShell's Start-Process passes -ArgumentList as a single string; we
+  // wrap each flag in double quotes. Flags with values (--foo=bar) are
+  // emitted as one arg; boolean flags (--disable-shields) are emitted as one.
+  const argList = [
+    `"--remote-debugging-port=${port}"`,
+    `"--user-data-dir=${profileDir}"`,
+    ...flags.map((f) => `"${f}"`),
+  ].join(', ');
   const script = `
 $ErrorActionPreference = 'Stop'
-$proc = Start-Process -FilePath "${browserPath}" -ArgumentList "--remote-debugging-port=${port}", "--user-data-dir=\`"${profileDir}\`"" -WindowStyle Normal -PassThru
+$proc = Start-Process -FilePath "${browserPath}" -ArgumentList ${argList} -WindowStyle Normal -PassThru
 Write-Output $proc.Id
 `.trim();
   const scriptPath = join(tmpdir(), `launch-brave-${Date.now()}-${process.pid}.ps1`);
@@ -90,11 +135,13 @@ Write-Output $proc.Id
   }
 }
 
-async function launchUnix(browserPath, profileDir, port) {
-  const child = spawn(browserPath, [
+async function launchUnix(browserPath, profileDir, port, flags) {
+  const args = [
     `--remote-debugging-port=${port}`,
     `--user-data-dir=${profileDir}`,
-  ], { detached: true, stdio: 'ignore' });
+    ...flags,
+  ];
+  const child = spawn(browserPath, args, { detached: true, stdio: 'ignore' });
   child.unref();
   return child.pid ?? -1;
 }
@@ -124,11 +171,13 @@ async function main() {
   }
 
   console.log(`Launching ${browserId}...`);
+  const flags = FLAGS_BY_BROWSER[browserId] ?? [];
+  if (flags.length > 0) console.log(`Flags: ${flags.join(' ')}`);
   let pid;
   try {
     pid = os === 'win32'
-      ? await launchWindows(browserPath, profileDir, port)
-      : await launchUnix(browserPath, profileDir, port);
+      ? await launchWindows(browserPath, profileDir, port, flags)
+      : await launchUnix(browserPath, profileDir, port, flags);
     console.log(`Launched! PID: ${pid}`);
   } catch (err) {
     console.error(`Failed to launch: ${err.message}`);

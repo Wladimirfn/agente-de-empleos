@@ -61,19 +61,34 @@ export interface LaunchOptions {
 }
 
 /**
- * Browser-specific flags. Brave's shield blocks secure.indeed.com by
- * default; we disable it on launch so the agent can reach the login
- * page. Chrome and Edge don't need this — their shield is off by
- * default for sites the user has visited.
+ * Browser-specific flags. MUST stay in sync with `FLAGS_BY_BROWSER` in
+ * scripts/launch-brave.mjs — the worker-launched browser and the
+ * manually-launched one need the same shield/fingerprint state so the
+ * agent's behavior is identical regardless of how the browser was started.
+ *
+ * Brave's shields in default mode:
+ *   - Block some localhost resources (ERR_BLOCKED_BY_CLIENT on the Astro UI).
+ *   - Strip fingerprinting headers Indeed uses for a clean session.
+ *   - Block cosmetic elements that the LLM needs to identify job cards.
+ *
+ * Chrome/Edge/Comet don't ship shields by default; the automation flag
+ * matters for all of them so the browser doesn't reveal itself as a bot.
  */
 export function browserSpecificFlags(browserId: BrowserId): string[] {
   if (browserId === 'brave') {
     return [
       '--disable-brave-shields',
-      '--disable-features=BraveShields,BraveShieldsEnabled,BraveAdBlock',
+      '--disable-features=BraveShields,BraveShieldsEnabled,BraveAdBlock,BraveAdblockCosmeticFiltering,BraveAdBlockCookieConsent',
+      '--disable-blink-features=AutomationControlled',
+      '--no-first-run',
+      '--no-default-browser-check',
     ];
   }
-  return [];
+  return [
+    '--disable-blink-features=AutomationControlled',
+    '--no-first-run',
+    '--no-default-browser-check',
+  ];
 }
 
 /**
