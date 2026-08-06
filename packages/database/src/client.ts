@@ -4,6 +4,7 @@ import { migrate } from "drizzle-orm/libsql/migrator";
 import path from "node:path";
 import fs from "node:fs";
 import * as schema from "./schema/index.js";
+import { runWithLockRetry } from "./retry.js";
 
 const DB_PATH = process.env.DATABASE_PATH ?? "data/employment-agent.db";
 
@@ -95,12 +96,29 @@ export function resolveMigrationsFolder(cwd = process.cwd()): string | null {
 	return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
 }
 
+/**
+ * True when the error is a transient SQLite lock that the caller should
+ * retry. Drizzle's `migrate` wraps the libsql client which already
+ * waits up to `busy_timeout` (5000ms) for the lock, but the web's
+ * middleware can race the worker's boot path and sometimes lose the
+ * 5s window. In that case we retry the migrate call from the top.
+ */
+
+const MIGRATION_RETRY_ATTEMPTS = 5;
+const MIGRATION_RETRY_BASE_MS = 200;
+
 export async function runMigrations(): Promise<void> {
-	await initDb();
-	const migrationsFolder = resolveMigrationsFolder();
-	if (migrationsFolder !== null) {
-		await migrate(getDb(), { migrationsFolder });
-	}
+  await initDb();
+  const migrationsFolder = resolveMigrationsFolder();
+  if (migrationsFolder === null) return;
+  await runWithLockRetry(
+    () => migrate(getDb(), { migrationsFolder }),
+    {
+      attempts: MIGRATION_RETRY_ATTEMPTS,
+      baseDelayMs: MIGRATION_RETRY_BASE_MS,
+      operation: 'runMigrations',
+    },
+  );
 }
 
 export async function closeDb(): Promise<void> {

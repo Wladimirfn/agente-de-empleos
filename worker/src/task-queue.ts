@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { db } from '@employment-agent/database';
+import { db, runWithLockRetry } from '@employment-agent/database';
 import { taskQueue } from '@employment-agent/database/schema';
 import { eq, and, sql } from 'drizzle-orm';
 
@@ -64,29 +64,41 @@ export async function claimNextTask(): Promise<TaskRow | null> {
   return (result[0] as TaskRow | undefined) ?? null;
 }
 
+const MARK_RETRY_ATTEMPTS = 3;
+const MARK_RETRY_BASE_MS = 50;
+
 export async function markCompleted(id: string): Promise<void> {
-  await db
-    .update(taskQueue)
-    .set({ status: 'completed', completedAt: new Date().toISOString() })
-    .where(eq(taskQueue.id, id));
+  await runWithLockRetry(
+    () => db
+      .update(taskQueue)
+      .set({ status: 'completed', completedAt: new Date().toISOString() })
+      .where(eq(taskQueue.id, id)),
+    { attempts: MARK_RETRY_ATTEMPTS, baseDelayMs: MARK_RETRY_BASE_MS, operation: `markCompleted(${id})` },
+  );
 }
 
 export async function markFailed(id: string, error: string): Promise<void> {
-  await db
-    .update(taskQueue)
-    .set({ status: 'failed', completedAt: new Date().toISOString(), error })
-    .where(eq(taskQueue.id, id));
+  await runWithLockRetry(
+    () => db
+      .update(taskQueue)
+      .set({ status: 'failed', completedAt: new Date().toISOString(), error })
+      .where(eq(taskQueue.id, id)),
+    { attempts: MARK_RETRY_ATTEMPTS, baseDelayMs: MARK_RETRY_BASE_MS, operation: `markFailed(${id})` },
+  );
 }
 
 export async function markRetrying(id: string, error: string, nextAttemptDelayMs = 60_000): Promise<void> {
   const next = new Date(Date.now() + nextAttemptDelayMs).toISOString();
-  await db
-    .update(taskQueue)
-    .set({
-      status: 'pending',
-      attempts: sql`${taskQueue.attempts} + 1`,
-      error,
-      scheduledAt: next,
-    })
-    .where(eq(taskQueue.id, id));
+  await runWithLockRetry(
+    () => db
+      .update(taskQueue)
+      .set({
+        status: 'pending',
+        attempts: sql`${taskQueue.attempts} + 1`,
+        error,
+        scheduledAt: next,
+      })
+      .where(eq(taskQueue.id, id)),
+    { attempts: MARK_RETRY_ATTEMPTS, baseDelayMs: MARK_RETRY_BASE_MS, operation: `markRetrying(${id})` },
+  );
 }

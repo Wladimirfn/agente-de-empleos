@@ -22,7 +22,17 @@ describe('database client', () => {
     } else {
       process.env.DATABASE_PATH = originalDbPath;
     }
-    rmSync(tmpDir, { recursive: true, force: true });
+    // On Windows, SQLite WAL/SHM files can be locked briefly after the
+    // test process closes the connection. rmSync with force: true can
+    // still EPERM in that window; the temp dir is best-effort cleanup
+    // and the OS will reclaim it. Swallow EPERM/EACCES to keep CI
+    // noise out of the result.
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      if (code !== 'EPERM' && code !== 'EACCES' && code !== 'EBUSY') throw err;
+    }
   });
 
   it('imports the client module without errors', async () => {
@@ -75,5 +85,72 @@ describe('database client', () => {
     const mod = await import('../src/client.js');
     expect(mod.db).toBeDefined();
     mod.closeDb();
+  });
+
+  it('retries runMigrations on transient SQLITE_BUSY and eventually succeeds', async () => {
+    vi.resetModules();
+    const tmp = path.join(tmpDir, 'retry.db');
+    process.env.DATABASE_PATH = tmp;
+
+    // First call to migrate throws a transient lock; second call passes.
+    let calls = 0;
+    vi.doMock('drizzle-orm/libsql/migrator', () => ({
+      migrate: async () => {
+        calls += 1;
+        if (calls === 1) {
+          const err = new Error('database is locked') as Error & { code?: string };
+          err.code = 'SQLITE_BUSY';
+          throw err;
+        }
+      },
+    }));
+
+    const mod = await import('../src/client.js');
+    await expect(mod.runMigrations()).resolves.toBeUndefined();
+    expect(calls).toBe(2);
+    mod.closeDb();
+    vi.doUnmock('drizzle-orm/libsql/migrator');
+  });
+
+  it('throws after the runMigrations retry budget is exhausted', async () => {
+    vi.resetModules();
+    process.env.DATABASE_PATH = path.join(tmpDir, 'exhaust.db');
+
+    let calls = 0;
+    vi.doMock('drizzle-orm/libsql/migrator', () => ({
+      migrate: async () => {
+        calls += 1;
+        const err = new Error('database is locked') as Error & { code?: string };
+        err.code = 'SQLITE_BUSY';
+        throw err;
+      },
+    }));
+
+    const mod = await import('../src/client.js');
+    await expect(mod.runMigrations()).rejects.toThrow(/database is locked/);
+    // runMigrations budget is 5 attempts.
+    expect(calls).toBe(5);
+    mod.closeDb();
+    vi.doUnmock('drizzle-orm/libsql/migrator');
+  });
+
+  it('does not retry on non-transient migration errors', async () => {
+    vi.resetModules();
+    process.env.DATABASE_PATH = path.join(tmpDir, 'nontransient.db');
+
+    let calls = 0;
+    vi.doMock('drizzle-orm/libsql/migrator', () => ({
+      migrate: async () => {
+        calls += 1;
+        throw new Error('schema corruption: cannot parse column type');
+      },
+    }));
+
+    const mod = await import('../src/client.js');
+    await expect(mod.runMigrations()).rejects.toThrow(/schema corruption/);
+    // Non-transient: single attempt.
+    expect(calls).toBe(1);
+    mod.closeDb();
+    vi.doUnmock('drizzle-orm/libsql/migrator');
   });
 });
