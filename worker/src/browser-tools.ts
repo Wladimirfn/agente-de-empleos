@@ -181,15 +181,26 @@ export async function createBrowserTools(opts?: {
     context = await pickContextForOrigin(browser, existing, opts?.approvedOrigin);
     page = await context.newPage();
     ownedPages.push(page);
-    // Track every NEW page that appears in this context (popups the
-    // agent triggers via `target=_blank`, OAuth callbacks, etc.) so
-    // the route guard's owner.close() — and our own close() — only
-    // touches pages we opened. Without this, the route's
+    // Track popups the AGENT triggers (`target=_blank`, OAuth
+    // callbacks, window.open() from the agent's page) so the route
+    // guard's `owner.close()` and our own `close()` only touch pages
+    // we opened. Without this, the route's
     // "if (owner !== page) await owner.close()" closes the USER's
     // own tabs (including their localhost tab) when they navigate to
     // a non-approved origin in another tab. That was the cause of the
     // "cierran su pesta y me botan del localhost" symptom.
-    context.on('page', (p) => { ownedPages.push(p); });
+    //
+    // Filter by `opener() === page`: only register popups that the
+    // agent's page opened. The user's own popups (Cmd+T, window.open
+    // from a user tab, target=_blank from a user page) are NOT agent
+    // popups and must remain off-limits. Subscribing to all pages
+    // would re-introduce a smaller variant of the original bug.
+    context.on('page', async (p) => {
+      try {
+        const opener = await p.opener();
+        if (opener === page) ownedPages.push(p);
+      } catch { /* detached before opener resolves — skip */ }
+    });
   } else {
     const contextOptions: Record<string, unknown> = {
       userAgent:

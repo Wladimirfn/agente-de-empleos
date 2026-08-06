@@ -651,6 +651,20 @@ export function registerBuiltinHandlers(): void {
           message: `Conectado al navegador ya corriendo vía CDP (perfil del usuario).`,
           payload: { source: 'cdp-existing', slug: payload.skillSlug },
         });
+      } else {
+        // connectToBrowser returns null when the probe finds no CDP
+        // endpoint on port 9222 — the common case when the user has
+        // the browser open but without --remote-debugging-port. The
+        // agent silently falls through to the next strategy and the
+        // user gets no actionable feedback. Emit the same event the
+        // exception path emits, with the canonical "open without CDP"
+        // diagnostic so the UI can show it. (Launch-brave.mjs prints
+        // the same instructions when it hits the same case.)
+        await events.emit({
+          kind: 'real_browser_attach_error',
+          message: 'No hay navegador con CDP en el puerto 9222. Si tenés el navegador abierto, cerrá todas las ventanas y re-ejecutá npm run dev, o usá el botón "Lanzar Brave" en /configuracion para abrirlo con debug port.',
+          payload: { reason: 'no-cdp-on-9222', slug: payload.skillSlug },
+        });
       }
     } catch (err) {
       // connectToBrowser returns null on failure; this catch is for the

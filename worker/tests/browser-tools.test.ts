@@ -156,4 +156,58 @@ describe('browser origin pinning', () => {
       approved.close();
     }
   }, 30_000);
+
+  it('does NOT close user pages opened AFTER the agent subscribed (W1 regression)', async () => {
+    // After commit 123f8f3, the agent's `context.on('page', ...)` listener
+    // pushed EVERY new page in the shared context to ownedPages. That
+    // re-introduced a smaller variant of the original "me botan del
+    // localhost" symptom for pages the user opened from their own tab
+    // (Cmd+T, target=_blank on a user page, window.open from a user
+    // page) AFTER the agent subscribed. The fix filters to popups the
+    // agent's own page opened (opener() === page). This test opens a
+    // fresh user page post-subscribe and asserts the route guard leaves
+    // it alone.
+    const { chromium } = await import('playwright');
+    const external = createServer((_req, res) => { res.end('external'); });
+    const externalOrigin = await listen(external);
+    const approved = createServer((_req, res) => { res.end('<h1>home</h1>'); });
+    const approvedAddr = await listen(approved);
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const ctx = await browser.newContext();
+      // The first user tab — pre-subscribe.
+      const prePage = await ctx.newPage();
+      await prePage.goto(approvedAddr);
+      // Agent subscribes by creating its tools.
+      const tools = await createBrowserTools({
+        headless: true,
+        approvedOrigin: approvedAddr,
+        existingBrowser: browser,
+      });
+      try {
+        // Now the user opens a NEW tab from their own page (NOT from
+        // the agent's page) — this fires the context.on('page')
+        // listener. With the over-broad subscription, the new page
+        // would be added to ownedPages and closed by the route guard.
+        const newUserPage = await ctx.newPage();
+        await newUserPage.goto(approvedAddr);
+        expect(newUserPage.isClosed()).toBe(false);
+        // Navigate the new user page to a non-approved origin.
+        await newUserPage.goto(externalOrigin).catch(() => undefined);
+        await newUserPage.waitForTimeout(150);
+        // The user page must still be open.
+        expect(newUserPage.isClosed()).toBe(false);
+        // The pre-subscribe user page must also still be open.
+        expect(prePage.isClosed()).toBe(false);
+      } finally {
+        await tools.close();
+        await prePage.close().catch(() => undefined);
+        await ctx.close();
+      }
+    } finally {
+      await browser.close();
+      external.close();
+      approved.close();
+    }
+  }, 30_000);
 });
