@@ -111,4 +111,49 @@ describe('browser origin pinning', () => {
     expect(lookup.d).toBe('2026-08-04');
     expect(lookup.e).toBeUndefined();
   });
+
+  it('does NOT close user-owned pages in the shared context when route guard blocks a navigation', async () => {
+    // Regression: in attached mode the route guard runs on the shared
+    // context. The agent's `owner.close()` in block() used to close ANY
+    // page that navigated to a non-approved origin — including the
+    // user's own tabs (the "me botan de localhost" symptom). After the
+    // fix, only pages the agent opened (ownedPages) can be closed.
+    const { chromium } = await import('playwright');
+    const external = createServer((_req, res) => { res.end('external'); });
+    const externalOrigin = await listen(external);
+    const approvedOrigin = 'http://127.0.0.1:1'; // unused, will be passed
+    let approved = createServer((_req, res) => { res.end('<h1>home</h1>'); });
+    const approvedAddr = await listen(approved);
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const ctx = await browser.newContext();
+      // The "user's tab" — NOT one of the agent's owned pages.
+      const userPage = await ctx.newPage();
+      await userPage.goto(approvedAddr);
+      // Now create the agent's tools on the SAME context (the attached path).
+      const tools = await createBrowserTools({
+        headless: true,
+        approvedOrigin: approvedAddr,
+        existingBrowser: browser,
+      });
+      try {
+        // Sanity: the user page is alive.
+        expect(userPage.isClosed()).toBe(false);
+        // User navigates their own tab to a NON-approved origin. The
+        // route should ABORT the navigation but NOT close the tab.
+        await userPage.goto(externalOrigin).catch(() => undefined);
+        // Give Playwright a tick to settle the abort handler.
+        await userPage.waitForTimeout(100);
+        expect(userPage.isClosed()).toBe(false);
+      } finally {
+        await tools.close();
+        await userPage.close().catch(() => undefined);
+        await ctx.close();
+      }
+    } finally {
+      await browser.close();
+      external.close();
+      approved.close();
+    }
+  }, 30_000);
 });

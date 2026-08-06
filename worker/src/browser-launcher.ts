@@ -167,6 +167,9 @@ export async function launchBrowser(opts: LaunchOptions): Promise<{ pid: number;
       pid = await launchBrowserViaPowerShell(opts.binaryPath, profileDir, cdpPort, extraFlags);
     } else {
       // Mac / Linux: use Node's spawn. Same arg list, no PowerShell.
+      // Attach an 'error' listener so an ENOENT / EACCES / EPERM from
+      // spawn() (e.g. the browser binary is missing) doesn't emit an
+      // unhandled 'error' event and crash the whole worker process.
       const { spawn } = await import('node:child_process');
       const args = [
         `--remote-debugging-port=${cdpPort}`,
@@ -174,6 +177,14 @@ export async function launchBrowser(opts: LaunchOptions): Promise<{ pid: number;
         ...extraFlags,
       ];
       const child = spawn(opts.binaryPath, args, { detached: true, stdio: 'ignore' });
+      child.on('error', (err) => {
+        // Detached + unref'd children are reaped automatically; we
+        // can't await this Promise from inside the listener, so we
+        // just surface the error to the parent via stderr. The
+        // subsequent CDP-probe loop will see the port never come up
+        // and throw a useful diagnostic.
+        console.error(`[worker] spawn(${opts.browserId}) error:`, err.message);
+      });
       child.unref();
       pid = child.pid ?? -1;
     }

@@ -181,6 +181,15 @@ export async function createBrowserTools(opts?: {
     context = await pickContextForOrigin(browser, existing, opts?.approvedOrigin);
     page = await context.newPage();
     ownedPages.push(page);
+    // Track every NEW page that appears in this context (popups the
+    // agent triggers via `target=_blank`, OAuth callbacks, etc.) so
+    // the route guard's owner.close() — and our own close() — only
+    // touches pages we opened. Without this, the route's
+    // "if (owner !== page) await owner.close()" closes the USER's
+    // own tabs (including their localhost tab) when they navigate to
+    // a non-approved origin in another tab. That was the cause of the
+    // "cierran su pesta y me botan del localhost" symptom.
+    context.on('page', (p) => { ownedPages.push(p); });
   } else {
     const contextOptions: Record<string, unknown> = {
       userAgent:
@@ -210,13 +219,22 @@ export async function createBrowserTools(opts?: {
       // consumed before fulfill), so we just pass sub-resources through
       // unmodified with `route.continue()`.
       if (!request.isNavigationRequest()) return route.continue();
-      const navigation = true;
       const block = async () => {
         policyBlocked = true;
         await route.abort('blockedbyclient');
         try {
           const owner = request.frame().page();
-          if (owner !== page) await owner.close();
+          // Only close the owner if it's a page WE created. In the
+          // attached-to-existing-browser path, the route runs on a
+          // context that also contains the user's tabs (their
+          // localhost tab, their work tabs, etc.) — closing any of
+          // those was the cause of the "me botan del localhost" bug.
+          // User-owned tabs are off-limits: the agent only navigates
+          // its own pages and is the only one responsible for closing
+          // popups it opened.
+          if (owner && ownedPages.includes(owner) && owner !== page) {
+            await owner.close();
+          }
         } catch { /* detached popup/frame */ }
       };
       if (!isApprovedOrigin(request.url(), opts.approvedOrigin!)) return block();

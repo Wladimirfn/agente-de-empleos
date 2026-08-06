@@ -202,6 +202,14 @@ async function launchUnix(browserPath, profileDir, port, flags) {
     ...flags,
   ];
   const child = spawn(browserPath, args, { detached: true, stdio: 'ignore' });
+  // Attach an 'error' listener so ENOENT/EACCES/EPERM at spawn time
+  // (e.g. the browser binary is missing) does not emit an unhandled
+  // 'error' event and crash the process. We can't await from inside
+  // the listener; the caller's try/catch on the returned pid and the
+  // CDP-probe loop downstream will produce a useful diagnostic.
+  child.on('error', (err) => {
+    console.error(`[launch-brave] spawn error: ${err.message}`);
+  });
   child.unref();
   return child.pid ?? -1;
 }
@@ -245,18 +253,28 @@ async function main() {
   };
   const exe = exeNames[os]?.[browserId] ?? browserId;
   if (await isBrowserProcessRunning(browserId)) {
-    console.error(`\nERROR: ${browserId} is already running without remote debugging enabled.`);
-    console.error(`Launching a second instance would cause two browsers to coexist (one with`);
-    console.error(`shields ON, one with shields OFF) and break localhost + the agent.`);
-    console.error('');
+    // Common state: the user has ${browserId} open from a previous
+    // session without --remote-debugging-port. Two coexisting browsers
+    // would split shields behavior and break localhost/agent attach.
+    // We used to exit 1 here, which made `npm run dev` (which uses
+    // `&&` to chain us) die before web/worker could start. That's a
+    // hard footgun: the user opens the app, can't get the UI, has no
+    // clue why. Instead, print a clear warning and exit 0 — web/worker
+    // will still boot; the worker's CDP-attach will fail with a clear
+    // UI error pointing at the same instructions below.
+    console.warn(`\nWARNING: ${browserId} is already running without remote debugging enabled.`);
+    console.warn(`Launching a second instance would cause two browsers to coexist (one with`);
+    console.warn(`shields ON, one with shields OFF) and break localhost + the agent.`);
+    console.warn('The dev server will still start, but the agent cannot connect until you fix this:');
+    console.warn('');
     if (os === 'win32') {
-      console.error(`Fix: close every ${exe} window, then re-run this script.`);
-      console.error(`     (Task Manager → search "${exe}" → End task if any orphan stays.)`);
+      console.warn(`  • close every ${exe} window, then re-run \`npm run dev\``);
+      console.warn(`  • (Task Manager → search "${exe}" → End task if any orphan stays.)`);
     } else {
-      console.error(`Fix: kill every "${exe}" process, then re-run this script.`);
-      console.error(`     pkill -f "${exe}"   (or close all windows manually)`);
+      console.warn(`  • kill every "${exe}" process, then re-run \`npm run dev\``);
+      console.warn(`  • pkill -f "${exe}"   (or close all windows manually)`);
     }
-    process.exit(1);
+    process.exit(0);
   }
 
   console.log(`Launching ${browserId}...`);
