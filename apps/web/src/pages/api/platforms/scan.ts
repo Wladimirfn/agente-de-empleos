@@ -59,7 +59,7 @@ export const POST: APIRoute = async ({ request }) => {
       source: 'browser-agent',
       slug,
       taskId: agentTaskId,
-      message: agentTaskId ? 'Agente LLM encolado. Abrirá un navegador para buscar manualmente.' : 'Ya existe un escaneo activo para esta plataforma.',
+      message: agentTaskId ? 'Agente LLM encolado. Se conecta a tu Brave (CDP) y busca automáticamente; si aparece un CAPTCHA resolvélalo en la ventana que se abre.' : 'Ya existe un escaneo activo para esta plataforma.',
     });
   }
 

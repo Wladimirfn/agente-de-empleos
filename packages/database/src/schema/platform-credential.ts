@@ -10,6 +10,16 @@ export const platformCredentials = sqliteTable('platform_credentials', {
   passwordCipher: text('password_cipher').notNull(),
   /** AES-GCM ciphertext (base64) of the Playwright storage state JSON. */
   storageStateCipher: text('storage_state_cipher'),
+  /**
+   * Which browser owns the profile (brave, chrome, edge, comet). NULL
+   * means the legacy Playwright-only flow. When set, the agent reuses
+   * the profile_dir on subsequent scans so the user stays logged in.
+   */
+  browserId: text('browser_id'),
+  /** Absolute path to the browser executable. Persistent across runs. */
+  browserPath: text('browser_path'),
+  /** Absolute path to the Chrome user-data-dir for this platform. */
+  profilePath: text('profile_path'),
   lastLoginAt: text('last_login_at'),
   lastLoginStatus: text('last_login_status', {
     enum: ['success', '2fa_required', 'login_failed', 'no_login_form', 'unknown'],

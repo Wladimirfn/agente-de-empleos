@@ -5,6 +5,7 @@ import { createSkillContext } from '@employment-agent/skill-runtime';
 import { isApprovedOrigin } from './browser-tools.js';
 import type { CandidateProfile } from '@employment-agent/domain';
 import type { LLMProvider } from '@employment-agent/llm';
+import type { BrowserId } from './browser-detector.js';
 import { db } from '@employment-agent/database';
 import { candidateProfiles, candidateExperiences, candidateSkills, candidateTargetRoles, jobs, platforms, llmSettings, jobMatches, matchFeedback } from '@employment-agent/database/schema';
 import { eq, and, isNull, sql, desc } from 'drizzle-orm';
@@ -25,27 +26,38 @@ async function loadLLM(): Promise<LLMProvider> {
 }
 
 /** Ensure a platform row exists and return its id. */
-async function ensurePlatform(slug: string, displayName: string): Promise<number> {
+async function ensurePlatform(slug: string, displayName: string, baseUrl?: string): Promise<number> {
   const existing = await db.select().from(platforms).where(eq(platforms.slug, slug)).limit(1);
-  if (existing[0]) return existing[0].id;
+  if (existing[0]) {
+    // Backfill baseUrl on rows created before we started storing it.
+    if (baseUrl && !existing[0].baseUrl) {
+      await db.update(platforms).set({ baseUrl }).where(eq(platforms.id, existing[0].id));
+    }
+    return existing[0].id;
+  }
   const inserted = await db
     .insert(platforms)
-    .values({ slug, displayName, status: 'active' })
+    .values({ slug, displayName, status: 'active', baseUrl: baseUrl ?? null })
     .returning({ id: platforms.id });
   return inserted[0]!.id;
 }
 
 /** Insert a job if it doesn't exist, or bump lastSeenAt if it does. Returns 'new' | 'duplicate'. */
 async function persistJob(platformId: number, job: {
-  externalId: string; title: string; company?: string; location?: string; url?: string; description?: string;
+  externalId: string; title: string; company?: string; location?: string; url?: string; description?: string; postedAt?: string;
 }): Promise<'new' | 'duplicate'> {
   const existing = await db
-    .select({ id: jobs.id })
+    .select({ id: jobs.id, postedAt: jobs.postedAt })
     .from(jobs)
     .where(and(eq(jobs.platformId, platformId), eq(jobs.externalId, job.externalId)))
     .limit(1);
   if (existing[0]) {
-    await db.update(jobs).set({ lastSeenAt: new Date().toISOString() }).where(eq(jobs.id, existing[0].id));
+    const update: Record<string, string | number | null> = { lastSeenAt: new Date().toISOString() };
+    // Only fill postedAt if we didn't have one before and the new job has
+    // it. We never overwrite a previously captured date — the platform's
+    // first publication date is the authoritative one.
+    if (!existing[0].postedAt && job.postedAt) update.postedAt = job.postedAt;
+    await db.update(jobs).set(update).where(eq(jobs.id, existing[0].id));
     return 'duplicate';
   }
   await db.insert(jobs).values({
@@ -56,6 +68,7 @@ async function persistJob(platformId: number, job: {
     location: job.location ?? null,
     url: job.url ?? null,
     description: job.description ?? null,
+    postedAt: job.postedAt ?? null,
   });
   return 'new';
 }
@@ -272,101 +285,202 @@ export function registerBuiltinHandlers(): void {
   const events = new DatabaseEventEmitter();
   const ctx = createSkillContext(events);
 
-    // Lazy import: the session-capture handler requires Playwright, which
-    // is heavy. Loading it on demand keeps the cold-start path fast.
+    // Lazy import: the session-capture handler requires Playwright +
+    // child_process. Loading them on demand keeps the cold-start path fast.
     const captureSession = async (task: TaskRow) => {
       const payload = JSON.parse(task.payloadJson) as { sessionId: string; slug: string; platformUrl: string };
-      const { getSessionCapture, setSessionReady, setSessionCompleted, setSessionFailed, setSessionExpired, persistStorageState } = await import('@employment-agent/security');
-    const { chromium } = await import('playwright');
+      const { getSessionCapture, setSessionReady, setSessionCompleted, setSessionFailed, setSessionExpired, persistStorageState, persistBrowserProfile } = await import('@employment-agent/security');
+      const { chromium } = await import('playwright');
+      const { detectAvailableBrowsers, pickDefaultBrowser, defaultProfileDir } = await import('./browser-detector.js');
+      const { launchBrowser, connectToBrowser, profileDirFor } = await import('./browser-launcher.js');
 
-    const session = await getSessionCapture(payload.sessionId);
-    if (!session) {
-      throw new Error(`Session ${payload.sessionId} not found`);
-    }
-    const approvedOrigin = new URL(payload.platformUrl).origin;
+      const session = await getSessionCapture(payload.sessionId);
+      if (!session) {
+        throw new Error(`Session ${payload.sessionId} not found`);
+      }
+      const approvedOrigin = new URL(payload.platformUrl).origin;
 
-    let browser: import('playwright').Browser | null = null;
-    try {
-      // Headed is important: the user must see and interact with the page.
-      browser = await chromium.launch({ headless: false });
-      const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-        locale: 'es-CL',
-        viewport: { width: 1280, height: 900 },
-      });
-      // Block navigation outside the approved origin while the user is
-      // logging in. We DO allow the well-known OAuth providers here
-      // (Google, Apple, Facebook, Microsoft, GitHub) because platforms
-      // like Indeed require the user to complete the OAuth flow inside
-      // the headed browser. The whitelist is intentionally narrow — see
-      // OAUTH_ALLOWED_ORIGINS in session-capture-policy.ts.
-      const { shouldAllowNavigation } = await import('./session-capture-policy.js');
-      await context.route('**/*', async (route) => {
-        const url = route.request().url();
-        if (!shouldAllowNavigation(url, approvedOrigin)) {
-          await route.abort('blockedbyclient');
-          return;
-        }
-        await route.continue();
-      });
+      // Pick a real browser (Brave → Chrome → Edge → Comet). Real binary
+      // = real TLS fingerprint = Google doesn't block the OAuth flow.
+      const browser = pickDefaultBrowser();
+      if (!browser) {
+        const available = detectAvailableBrowsers();
+        throw new Error(
+          `No supported browser found. Install Brave, Chrome, Edge, or Comet. Detected: ${available.map((b) => b.id).join(', ') || 'none'}.`
+        );
+      }
 
-      const page = await context.newPage();
-      await page.goto(approvedOrigin, { timeout: 30_000, waitUntil: 'domcontentloaded' });
+      // Prefer the user's existing browser instance (already running with
+      // their cookies and Brave shield settings — secure.indeed.com is
+      // already allowed there). Fall back to the user's profile dir if
+      // no browser is running with CDP. Last resort: a dedicated profile.
+      let launchedBrowser: import('playwright').Browser | null = null;
+      let launchedProcess: { pid: number; cdpPort: number } | null = null;
+      let profileDir: string;
+      let usedExistingBrowser = false;
 
-      await events.emit({
-        kind: 'session_capture_ready',
-        message: `Navegador abierto en ${approvedOrigin}. Loguéate y tocá "Listo" cuando termines.`,
-        payload: { sessionId: payload.sessionId, slug: payload.slug },
-      });
-      await setSessionReady(payload.sessionId);
-
-      // Poll for user completion. Each tick re-reads the row so the
-      // user's "Listo" click is observable across process boundaries.
-      const deadline = Date.now() + 5 * 60_000;
-      while (Date.now() < deadline) {
-        await sleep(1_000);
-        const current = await getSessionCapture(payload.sessionId);
-        if (!current) return; // session was deleted
-        if (current.status === 'completed') return; // shouldn't happen but safe
-        if (current.status === 'cancelled') return; // user clicked Cancel in the UI
-        if (current.userCompletedAt) {
-          const storageState = JSON.stringify(await context.storageState());
-          await persistStorageState(payload.slug, storageState);
-          await setSessionCompleted(payload.sessionId);
+      try {
+        launchedBrowser = await connectToBrowser();
+        if (launchedBrowser) {
+          usedExistingBrowser = true;
+          // We don't know the exact profile dir of the running browser
+          // without querying CDP. The default profile is the common case.
+          profileDir = defaultProfileDir(browser.id) ?? profileDirFor(payload.slug, browser.id);
           await events.emit({
-            kind: 'session_capture_completed',
-            message: `Sesión de ${payload.slug} guardada y cifrada.`,
-            payload: { slug: payload.slug },
+            kind: 'session_capture_attached',
+            message: `Conectado a ${browser.id} ya abierto. Tus cookies y configuración están disponibles.`,
+            payload: { browser: browser.id, slug: payload.slug },
           });
-          return;
+        } else {
+          // No existing browser. Use the user's default profile if
+          // available (so they keep their cookies and shield settings).
+          const userProfile = defaultProfileDir(browser.id);
+          profileDir = userProfile ?? profileDirFor(payload.slug, browser.id);
+          const launched = await launchBrowser({
+            browserId: browser.id,
+            binaryPath: browser.binaryPath,
+            profileDir,
+          });
+          launchedProcess = launched;
+          launchedBrowser = await chromium.connectOverCDP(`http://127.0.0.1:${launched.cdpPort}`);
+          await events.emit({
+            kind: 'session_capture_launched',
+            message: `Lanzado ${browser.id} con tu perfil existente.`,
+            payload: { browser: browser.id, slug: payload.slug, profileDir },
+          });
         }
-      }
 
-      // Timeout. Re-check before persisting in case the user cancelled
-      // in the last second — don't overwrite a 'cancelled' status with
-      // 'expired'.
-      const final = await getSessionCapture(payload.sessionId);
-      if (final && final.status !== 'cancelled') {
-        await setSessionExpired(payload.sessionId);
+        const context = launchedBrowser.contexts()[0] ?? await launchedBrowser.newContext();
+
+        // Always create a fresh tab so we don't disturb the user's
+        // existing tabs (their web app, OAuth flows, etc.) and so the
+        // user sees the platform page in a new visible tab they can
+        // interact with. Each session gets its own tab.
+        const page = await context.newPage();
+        await page.bringToFront();
+        console.log(`[CAPTURE_SESSION] New page created. Total pages: ${context.pages().length}. Beginning navigation to ${approvedOrigin}`);
+
+        // Block navigation outside the approved origin while the user is
+        // logging in. We DO allow the well-known OAuth providers here
+        // (Google, Apple, Facebook, Microsoft, GitHub) because platforms
+        // like Indeed require the user to complete the OAuth flow inside
+        // the browser. The whitelist is intentionally narrow — see
+        // OAUTH_ALLOWED_ORIGINS in session-capture-policy.ts.
+        //
+        // IMPORTANT: only block *top-level* navigation. Sub-resources
+        // (CSS, JS, fonts, images, XHR) come from CDNs (CloudFront,
+        // gstatic, etc.) and the user's Google account. Blocking them
+        // breaks the page layout — the HTML loads but everything is
+        // unstyled and unclickable. Use request.isNavigationRequest()
+        // to distinguish top-level navigations from sub-resources.
+        const { shouldAllowNavigation } = await import('./session-capture-policy.js');
+        await context.route('**/*', async (route) => {
+          const request = route.request();
+          const url = request.url();
+          if (request.isNavigationRequest() && !shouldAllowNavigation(url, approvedOrigin)) {
+            await route.abort('blockedbyclient');
+            return;
+          }
+          await route.continue();
+        });
+
+        await page.goto(approvedOrigin, { timeout: 30_000, waitUntil: 'domcontentloaded' });
+        console.log(`[CAPTURE_SESSION] Navigation complete. Page URL: ${page.url()}`);
+
+        await events.emit({
+          kind: 'session_capture_ready',
+          message: `Navegador ${browser.id} en ${approvedOrigin}. Loguéate y tocá "Listo" cuando termines.`,
+          payload: { sessionId: payload.sessionId, slug: payload.slug, browser: browser.id, usedExistingBrowser },
+        });
+        await setSessionReady(payload.sessionId);
+
+        // Poll for user completion. Each tick re-reads the row so the
+        // user's "Listo" click is observable across process boundaries.
+        const deadline = Date.now() + 5 * 60_000;
+        while (Date.now() < deadline) {
+          await sleep(1_000);
+          const current = await getSessionCapture(payload.sessionId);
+          if (!current) return; // session was deleted
+          if (current.status === 'completed') return; // shouldn't happen but safe
+          if (current.status === 'cancelled') return; // user clicked Cancel in the UI
+          if (current.userCompletedAt) {
+            // The profile dir on disk is the durable record — Chromium
+            // already wrote cookies/IndexedDB there. We just note which
+            // browser owns this profile so the next scan reuses it.
+            const storageState = JSON.stringify(await context.storageState());
+            await persistBrowserProfile(payload.slug, browser.id, browser.binaryPath, profileDir);
+            await persistStorageState(payload.slug, storageState);
+            await setSessionCompleted(payload.sessionId);
+            await events.emit({
+              kind: 'session_capture_completed',
+              message: `Sesión de ${payload.slug} guardada (${browser.id}).`,
+              payload: { slug: payload.slug, browser: browser.id, profileDir: profileDir.replace(process.cwd(), '') },
+            });
+            return;
+          }
+        }
+
+        // Timeout. Re-check before persisting in case the user cancelled
+        // in the last second — don't overwrite a 'cancelled' status with
+        // 'expired'.
+        const final = await getSessionCapture(payload.sessionId);
+        if (final && final.status !== 'cancelled') {
+          await setSessionExpired(payload.sessionId);
+        }
+        await events.emit({
+          kind: 'session_capture_expired',
+          message: `La sesión de ${payload.slug} expiró sin completarse.`,
+          payload: { sessionId: payload.sessionId, slug: payload.slug },
+        });
+      } catch (err) {
+        await setSessionFailed(payload.sessionId, err instanceof Error ? err.message : String(err));
+        await events.emit({
+          kind: 'session_capture_failed',
+          message: `Falló la captura de sesión para ${payload.slug}: ${err instanceof Error ? err.message : String(err)}`,
+          payload: { sessionId: payload.sessionId, slug: payload.slug },
+        });
+        throw err;
+      } finally {
+        // Close the Playwright connection. If we attached to the user's
+        // existing browser, do NOT close it — they keep using it. If we
+        // launched a new one, also leave it running so the user keeps
+        // their session.
+        if (launchedBrowser) await launchedBrowser.close().catch(() => undefined);
       }
-      await events.emit({
-        kind: 'session_capture_expired',
-        message: `La sesión de ${payload.slug} expiró sin completarse.`,
-        payload: { sessionId: payload.sessionId, slug: payload.slug },
-      });
-    } catch (err) {
-      await setSessionFailed(payload.sessionId, err instanceof Error ? err.message : String(err));
-      await events.emit({
-        kind: 'session_capture_failed',
-        message: `Falló la captura de sesión para ${payload.slug}: ${err instanceof Error ? err.message : String(err)}`,
-        payload: { sessionId: payload.sessionId, slug: payload.slug },
-      });
-      throw err;
-    } finally {
-      if (browser) await browser.close().catch(() => undefined);
-    }
-  };
+    };
   registerHandler('CAPTURE_SESSION', captureSession);
+
+  registerHandler('LAUNCH_BROWSER', async (task) => {
+    const payload = JSON.parse(task.payloadJson) as { browserId?: string };
+    const { detectAvailableBrowsers, pickDefaultBrowser, findBrowser, defaultProfileDir } = await import('./browser-detector.js');
+    const { launchBrowser } = await import('./browser-launcher.js');
+
+    const browser = payload.browserId
+      ? findBrowser(payload.browserId as BrowserId)
+      : pickDefaultBrowser();
+    if (!browser) {
+      const available = detectAvailableBrowsers();
+      throw new Error(
+        `No supported browser found. Install Brave, Chrome, Edge, or Comet. Detected: ${available.map((b) => b.id).join(', ') || 'none'}.`
+      );
+    }
+
+    const profileDir = defaultProfileDir(browser.id);
+    if (!profileDir) {
+      throw new Error(`No default profile dir for ${browser.id} on this OS.`);
+    }
+
+    const launched = await launchBrowser({
+      browserId: browser.id,
+      binaryPath: browser.binaryPath,
+      profileDir,
+    });
+    await events.emit({
+      kind: 'launch_browser_success',
+      message: `${browser.id} launched with debug port ${launched.cdpPort}.`,
+      payload: { browser: browser.id, port: launched.cdpPort, profileDir },
+    });
+  });
 
   registerHandler('SCAN_ACTIVE_PLATFORMS', async (task) => {
     const payload = JSON.parse(task.payloadJson) as { triggeredBy?: string };
@@ -388,7 +502,8 @@ export function registerBuiltinHandlers(): void {
       throw new Error(`Skill not found: ${payload.skillSlug}`);
     }
     const profile = await loadWorkerProfile();
-    const platformId = await ensurePlatform(skill.slug, skill.displayName);
+    const { platformUrlForSlug } = await import('./platform-urls.js');
+    const platformId = await ensurePlatform(skill.slug, skill.displayName, platformUrlForSlug(skill.slug));
 
     // Wrap the event emitter to intercept job_found events and persist them.
     let newCount = 0;
@@ -447,14 +562,12 @@ export function registerBuiltinHandlers(): void {
         payload: { skillSlug: skill.slug, error: errMsg },
       });
       const { enqueueTask } = await import('./task-queue.js');
+      const { platformUrlForSlug } = await import('./platform-urls.js');
       await enqueueTask({
         type: 'BROWSER_AGENT_SCAN',
         payload: {
           skillSlug: skill.slug,
-          platformUrl: skill.slug === 'laborum' ? 'https://www.laborum.cl'
-            : skill.slug === 'computrabajo' ? 'https://www.computrabajo.cl'
-            : skill.slug === 'indeed' ? 'https://cl.indeed.com'
-            : `https://www.${skill.slug}.cl`,
+          platformUrl: platformUrlForSlug(skill.slug),
           triggeredBy: 'skill-fallback',
           originalError: errMsg.slice(0, 200),
         },
@@ -502,7 +615,93 @@ export function registerBuiltinHandlers(): void {
 
     const { runBrowserAgent } = await import('./browser-agent.js');
     const { loadCredentialPlaintext } = await import('@employment-agent/security');
+    const { detectAvailableBrowsers, findBrowser } = await import('./browser-detector.js');
+    const { launchBrowser, connectToBrowser, profileDirFor } = await import('./browser-launcher.js');
+    const { chromium } = await import('playwright');
     const credential = await loadCredentialPlaintext(payload.skillSlug);
+
+    // Attach to a real browser. Three escalating strategies, in order:
+    //
+    //   1. CDP attach to whatever is already listening on 9222. This is
+    //      the `npm run launch:brave` flow — user ran the launcher,
+    //      has their normal Brave session with their cookies, the worker
+    //      just connects. Works even WITHOUT a captured credential.
+    //
+    //   2. Launch a dedicated instance with the captured profile path
+    //      (from a previous CAPTURE_SESSION). This is what makes the
+    //      session survive a worker restart — profile has cookies.
+    //
+    //   3. Playwright's bundled Chromium. Last resort: Google will
+    //      detect the TLS fingerprint and block login flows.
+    //
+    // Step 1 used to be gated on credential.browserPath existing, which
+    // meant the user's first scan after install always fell through to
+    // step 3 and failed. The condition was wrong: launching Brave via
+    // npm run launch:brave is independent of whether any platform has
+    // a captured credential yet.
+    let realBrowser: import('playwright').Browser | null = null;
+    let browserProc: { pid: number; cdpPort: number } | null = null;
+
+    // Strategy 1: attach to the already-running CDP browser.
+    try {
+      realBrowser = await connectToBrowser();
+      if (realBrowser) {
+        await events.emit({
+          kind: 'real_browser_attached',
+          message: `Conectado al navegador ya corriendo vía CDP (perfil del usuario).`,
+          payload: { source: 'cdp-existing', slug: payload.skillSlug },
+        });
+      } else {
+        // connectToBrowser returns null when the probe finds no CDP
+        // endpoint on port 9222 — the common case when the user has
+        // the browser open but without --remote-debugging-port. The
+        // agent silently falls through to the next strategy and the
+        // user gets no actionable feedback. Emit the same event the
+        // exception path emits, with the canonical "open without CDP"
+        // diagnostic so the UI can show it. (Launch-brave.mjs prints
+        // the same instructions when it hits the same case.)
+        await events.emit({
+          kind: 'real_browser_attach_error',
+          message: 'No hay navegador con CDP en el puerto 9222. Si tenés el navegador abierto, cerrá todas las ventanas y re-ejecutá npm run dev, o usá el botón "Lanzar Brave" en /configuracion para abrirlo con debug port.',
+          payload: { reason: 'no-cdp-on-9222', slug: payload.skillSlug },
+        });
+      }
+    } catch (err) {
+      // connectToBrowser returns null on failure; this catch is for the
+      // unexpected case where connectOverCDP itself throws.
+      await events.emit({
+        kind: 'real_browser_attach_error',
+        message: `CDP attach falló: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+
+    // Strategy 2: launch a dedicated browser with the captured profile.
+    if (!realBrowser && credential?.browserPath && credential?.profilePath) {
+      const browser = findBrowser(credential.browserId as Parameters<typeof findBrowser>[0] ?? null);
+      if (browser) {
+        try {
+          const launched = await launchBrowser({
+            browserId: browser.id,
+            binaryPath: credential.browserPath,
+            profileDir: credential.profilePath,
+          });
+          browserProc = launched;
+          realBrowser = await chromium.connectOverCDP(`http://127.0.0.1:${launched.cdpPort}`);
+          await events.emit({
+            kind: 'real_browser_attached',
+            message: `Lanzado ${browser.id} con perfil guardado de ${payload.skillSlug}.`,
+            payload: { browser: browser.id, slug: payload.skillSlug },
+          });
+        } catch (err) {
+          await events.emit({
+            kind: 'real_browser_fallback',
+            message: `Falló launch dedicado. Usando lo que haya disponible. ${err instanceof Error ? err.message : String(err)}`,
+          });
+          realBrowser = null;
+        }
+      }
+    }
+
     const result = await runBrowserAgent({
       platform: payload.skillSlug,
       platformUrl: payload.platformUrl,
@@ -512,6 +711,7 @@ export function registerBuiltinHandlers(): void {
       headless: false, // Headed so user can solve CAPTCHAs
       loginCredentials: credential ? { email: credential.email, password: credential.password } : undefined,
       storageState: credential?.storageState ?? undefined,
+      existingBrowser: realBrowser ?? undefined,
       onJobsFound: async (agentJobs) => {
         let newC = 0, dupC = 0;
         for (const job of agentJobs) {
@@ -522,6 +722,7 @@ export function registerBuiltinHandlers(): void {
             location: job.location,
             url: job.url,
             description: job.description,
+            postedAt: job.postedAt,
           });
           if (r === 'new') newC++; else dupC++;
         }
@@ -562,6 +763,11 @@ export function registerBuiltinHandlers(): void {
         kind: 'scan_score_error',
         message: `Scoring failed: ${scoreErr instanceof Error ? scoreErr.message : String(scoreErr)}`,
       });
+    } finally {
+      // Close the Playwright CDP connection. We deliberately do NOT kill
+      // the browser process — the user keeps it running so subsequent
+      // scans can attach without re-launching.
+      if (realBrowser) await realBrowser.close().catch(() => undefined);
     }
   });
 }

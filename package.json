@@ -13,9 +13,11 @@
     "skills/*"
   ],
   "scripts": {
-    "dev": "concurrently -n web,worker -c blue,green \"npm:dev:web\" \"npm:dev:worker\"",
+    "dev": "npm run launch:brave && concurrently -n web,worker -c blue,green \"npm:dev:web\" \"npm:dev:worker\"",
+    "dev:noweb": "npm run launch:brave && npm --workspace=worker run dev",
     "dev:web": "npm --workspace=apps/web run dev",
     "dev:worker": "npm --workspace=worker run dev",
+    "launch:brave": "node scripts/launch-brave.mjs",
     "build": "npm --workspace=apps/web run build",
     "test": "vitest run",
     "test:watch": "vitest",

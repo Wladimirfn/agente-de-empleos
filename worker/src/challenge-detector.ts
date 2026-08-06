@@ -9,6 +9,14 @@
  * the underlying provider. False positives are acceptable here because
  * the worst case is "we asked the user to solve a CAPTCHA that wasn't
  * really there" — recoverable, just slower.
+ *
+ * IMPORTANT — login-required is no longer matched in body text. Most
+ * job platforms put a "Iniciar sesión" / "Sign in" link in the page
+ * navigation regardless of whether the user is logged in. Firing
+ * login-required on every page where that nav string appears stopped
+ * the agent on every successful scan. Real login walls are detected
+ * via the page TITLE (e.g. "Iniciar sesión - Trabajando.com") or URL
+ * (e.g. /login, redirect_uri=, /auth).
  */
 
 export type ChallengeKind = 'cloudflare-verification' | 'captcha' | 'login-required';
@@ -41,16 +49,38 @@ const CAPTCHA_MARKERS = [
   'captcha',
 ];
 
-const LOGIN_MARKERS = [
+// Login wall signals that are reliable regardless of where they appear
+// on the page. Title-based matches are strong: when the page IS a login
+// page, the title always carries it. URL-based matches catch the
+// redirect-to-login pattern (Indeed, LinkedIn, etc). Body-text matches
+// are deliberately excluded — see the IMPORTANT note above.
+const LOGIN_TITLE_MARKERS = [
   'iniciar sesi\u00f3n',
   'iniciar sesion',
-  'continue with email',
-  'continue with google',
-  'forgot password',
-  'ingresar',
-  'ingresa',
   'sign in',
   'log in',
+  'ingresar',
+];
+
+const LOGIN_URL_MARKERS = [
+  '/login',
+  '/signin',
+  '/sign-in',
+  '/auth',
+  'redirect_uri=',
+  'login.microsoftonline',
+  '/account/login',
+];
+
+// Body markers that ONLY appear on dedicated login pages, not in nav
+// bars. These are safe to match against body text.
+const LOGIN_BODY_MARKERS = [
+  'continue with google',
+  'continue with email',
+  'forgot password',
+  'sign in with',
+  'iniciar sesi\u00f3n con google',
+  'iniciar sesi\u00f3n con facebook',
 ];
 
 export interface PageLikeState {
@@ -74,8 +104,20 @@ export function detectChallenge(state: PageLikeState): ChallengeDetection | null
       return { kind: 'captcha', marker };
     }
   }
-  for (const marker of LOGIN_MARKERS) {
-    if (title.includes(marker) || text.includes(marker)) {
+  // Login: title first (most reliable), then URL patterns, then
+  // dedicated body markers that don't appear in nav bars.
+  for (const marker of LOGIN_TITLE_MARKERS) {
+    if (title.includes(marker)) {
+      return { kind: 'login-required', marker };
+    }
+  }
+  for (const marker of LOGIN_URL_MARKERS) {
+    if (url.includes(marker)) {
+      return { kind: 'login-required', marker };
+    }
+  }
+  for (const marker of LOGIN_BODY_MARKERS) {
+    if (text.includes(marker)) {
       return { kind: 'login-required', marker };
     }
   }

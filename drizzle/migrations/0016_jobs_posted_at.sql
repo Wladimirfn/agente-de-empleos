@@ -1,0 +1,12 @@
+-- Add posted_at to jobs so the ofertas page can show when each offer was
+-- originally published on the platform (not just when we first scraped it).
+--
+-- Indeed's mosaic JSON includes `datePublished` (ISO date) and `relativeDate`
+-- ("Hoy", "hace 2 días"). The browser-agent prompt now instructs the LLM to
+-- extract whichever is available; we persist it as the raw string the agent
+-- returned. The UI renders it next to the company/location line so the user
+-- can sort by recency.
+--
+-- Nullable: many platforms don't expose a publication date, and historical
+-- jobs (back-filled from rawPayload) won't have one either.
+ALTER TABLE `jobs` ADD COLUMN `posted_at` text;

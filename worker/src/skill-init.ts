@@ -11,12 +11,17 @@ import { trabajandoSkill } from '../../skills/trabajando/index.js';
 
 export const productionSkills = [laborumSkill, computrabajoSkill, indeedSkill, chiletrabajosSkill, empleosaquaSkill, trabajandoSkill] as const;
 
-async function ensurePlatform(slug: string, displayName: string): Promise<number> {
+async function ensurePlatform(slug: string, displayName: string, baseUrl?: string): Promise<number> {
   const existing = await db.select().from(platforms).where(eq(platforms.slug, slug)).limit(1);
-  if (existing[0]) return existing[0].id;
+  if (existing[0]) {
+    if (baseUrl && !existing[0].baseUrl) {
+      await db.update(platforms).set({ baseUrl }).where(eq(platforms.id, existing[0].id));
+    }
+    return existing[0].id;
+  }
   const inserted = await db
     .insert(platforms)
-    .values({ slug, displayName, status: 'active' })
+    .values({ slug, displayName, status: 'active', baseUrl: baseUrl ?? null })
     .returning({ id: platforms.id });
   return inserted[0]!.id;
 }
@@ -40,9 +45,10 @@ export function initializeSkills(): void {
 }
 
 async function persistRegisteredSkills(): Promise<void> {
+  const { platformUrlForSlug } = await import('./platform-urls.js');
   for (const skill of registry.list()) {
     try {
-      const platformId = await ensurePlatform(skill.slug, skill.displayName);
+      const platformId = await ensurePlatform(skill.slug, skill.displayName, platformUrlForSlug(skill.slug));
       await db.insert(platformSkills).values({
         platformId,
         skillSlug: skill.slug,

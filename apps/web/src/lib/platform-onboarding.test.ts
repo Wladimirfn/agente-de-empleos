@@ -9,10 +9,12 @@ const { db, runMigrations, closeDb } = await import('@employment-agent/database'
 const { platforms, taskQueue } = await import('@employment-agent/database/schema');
 const {
   approvedOriginsFromMessage,
+  enqueuePlatformScan,
   isPublicAddress,
   onboardPlatform,
   pinnedRequest,
   platformScanTaskType,
+  STALE_RUNNING_THRESHOLD_MS,
   validateAndProbePlatform,
 } = await import('./platform-onboarding.js');
 const deps = {
@@ -119,11 +121,61 @@ describe('platform persistence', () => {
     expect(requested.taskId).toBeTruthy();
   });
   it('atomically deduplicates concurrent browser and deterministic scan tasks', async () => {
-    const { enqueuePlatformScan } = await import('./platform-onboarding.js');
     const browser = await Promise.all(Array.from({ length: 5 }, () => enqueuePlatformScan({ slug: 'jobs', url: 'https://jobs.example.com' }, 'test')));
     const deterministic = await Promise.all(Array.from({ length: 5 }, () => enqueuePlatformScan({ slug: 'jobs', url: 'https://jobs.example.com' }, 'test', 'SCAN_PLATFORM')));
     expect(browser.filter(Boolean)).toHaveLength(1);
     expect(deterministic.filter(Boolean)).toHaveLength(1);
     expect(await db.select().from(taskQueue)).toHaveLength(2);
+  });
+
+  it('clears zombie running tasks for the same slug so a new scan is not blocked', async () => {
+    // Plant a zombie: status='running', started_at = 1 hour ago, for slug='jobs'.
+    // Real users hit this when the worker dies mid-scan and the task is left
+    // behind. Without the sweep, the next enqueuePlatformScan('jobs') would
+    // refuse because of the "running" status.
+    const oneHourAgo = new Date(Date.now() - 60 * 60_000).toISOString();
+    await db.insert(taskQueue).values({
+      id: 'zombie-1', type: 'BROWSER_AGENT_SCAN',
+      payloadJson: JSON.stringify({ skillSlug: 'jobs', platformUrl: 'https://jobs.example.com', triggeredBy: 'old-worker' }),
+      status: 'running', attempts: 1, maxAttempts: 1, scheduledAt: oneHourAgo, startedAt: oneHourAgo,
+    });
+
+    // Sanity: a fresh 'running' task for a DIFFERENT slug must still block.
+    await db.insert(taskQueue).values({
+      id: 'fresh-1', type: 'BROWSER_AGENT_SCAN',
+      payloadJson: JSON.stringify({ skillSlug: 'other', platformUrl: 'https://other.example.com', triggeredBy: 'live' }),
+      status: 'running', attempts: 0, maxAttempts: 1, scheduledAt: new Date().toISOString(), startedAt: new Date().toISOString(),
+    });
+
+    const newId = await enqueuePlatformScan({ slug: 'jobs', url: 'https://jobs.example.com' }, 'user-click');
+    expect(newId).toBeTruthy();
+
+    const after = await db.select().from(taskQueue);
+    const zombie = after.find((t) => t.id === 'zombie-1');
+    const fresh = after.find((t) => t.id === 'fresh-1');
+    // The zombie for 'jobs' was swept to 'failed' by enqueuePlatformScan.
+    expect(zombie?.status).toBe('failed');
+    expect(zombie?.error).toContain('[auto-cleanup]');
+    // The fresh running task for a different slug was NOT touched.
+    expect(fresh?.status).toBe('running');
+    expect(after.filter((t) => t.status === 'pending')).toHaveLength(1);
+  });
+
+  it('does NOT sweep fresh running tasks (a concurrent scan must still block)', async () => {
+    const justNow = new Date().toISOString();
+    await db.insert(taskQueue).values({
+      id: 'live-1', type: 'BROWSER_AGENT_SCAN',
+      payloadJson: JSON.stringify({ skillSlug: 'jobs', platformUrl: 'https://jobs.example.com', triggeredBy: 'live' }),
+      status: 'running', attempts: 0, maxAttempts: 1, scheduledAt: justNow, startedAt: justNow,
+    });
+    const id = await enqueuePlatformScan({ slug: 'jobs', url: 'https://jobs.example.com' }, 'user-click');
+    expect(id).toBeNull(); // blocked, as before
+    const live = (await db.select().from(taskQueue)).find((t) => t.id === 'live-1');
+    expect(live?.status).toBe('running');
+    expect(live?.error ?? '').not.toContain('[auto-cleanup]');
+  });
+
+  it('exposes a 10-minute stale-running threshold so the worker boot sweep agrees with the enqueue gate', () => {
+    expect(STALE_RUNNING_THRESHOLD_MS).toBe(10 * 60_000);
   });
 });

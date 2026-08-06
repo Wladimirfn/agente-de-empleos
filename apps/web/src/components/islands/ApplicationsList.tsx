@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { formatLocalDate } from '../../lib/date-format.js';
 
 interface Application {
   id: number;
@@ -94,12 +95,7 @@ export default function ApplicationsList() {
   }
 
   function formatDate(iso: string | null): string {
-    if (!iso) return '—';
-    try {
-      return new Date(iso).toLocaleDateString('es-CL', { day: 'numeric', month: 'short', year: 'numeric' });
-    } catch {
-      return iso;
-    }
+    return formatLocalDate(iso);
   }
 
   return (

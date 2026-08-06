@@ -28,12 +28,18 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 });
 
 const SLUG_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
+
+// IMPORTANT: this map duplicates worker/src/platform-urls.ts. Earlier it
+// had www.empleosaqua.com hard-coded here; that hostname does not resolve
+// (NXDOMAIN, the real Empleos Aqua site is at .cl). If you add a new
+// platform, keep both maps in sync — or call platformUrlForSlug via a
+// shared package import.
 const PLATFORM_URLS: Record<string, string> = {
   indeed: 'https://cl.indeed.com',
   laborum: 'https://www.laborum.cl',
   computrabajo: 'https://www.computrabajo.cl',
   chiletrabajos: 'https://www.chiletrabajos.cl',
-  empleosaqua: 'https://www.empleosaqua.com',
+  empleosaqua: 'https://www.empleosaqua.cl',
   trabajando: 'https://www.trabajando.cl',
 };
 

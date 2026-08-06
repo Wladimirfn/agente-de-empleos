@@ -32,6 +32,12 @@ export interface BrowserAgentJob {
   location?: string;
   url?: string;
   description?: string;
+  /**
+   * When the offer was published on the platform (e.g. Indeed's
+   * `datePublished` or `relativeDate` like "Hoy" / "hace 2 días"). The
+   * ofertas page renders this so the user can sort by recency.
+   */
+  postedAt?: string;
 }
 
 const MAX_STEPS = 25;
@@ -42,12 +48,26 @@ export function safeActionName(value: unknown): string {
   return ACTIONS.has(action) ? action : 'unknown';
 }
 export function sanitizeBrowserJobs(jobs: unknown[]): BrowserAgentJob[] {
-  return sanitizeOutbound(jobs.filter((value) => {
+  const filtered = jobs.filter((value) => {
     const job = value as Record<string, unknown>;
     return typeof job.externalId === 'string' && typeof job.title === 'string'
       && !hasUrlCredentials(job.externalId)
       && (typeof job.url !== 'string' || !hasUrlCredentials(job.url));
-  })) as BrowserAgentJob[];
+  });
+  const normalized = filtered.map((value) => {
+    const job = { ...(value as Record<string, unknown>) };
+    // postedAt is user-visible metadata (a date string), not a secret; just
+    // coerce to trimmed string or strip. Anything longer than 64 chars is
+    // almost certainly the agent dumping a description by mistake.
+    const raw = typeof job.postedAt === 'string' ? job.postedAt.trim() : '';
+    if (raw.length === 0 || raw.length > 64) {
+      delete job.postedAt;
+    } else {
+      job.postedAt = raw;
+    }
+    return job;
+  });
+  return sanitizeOutbound(normalized) as unknown as BrowserAgentJob[];
 }
 
 const SYSTEM_PROMPT = `You are a browser agent controlling a web browser to search for jobs on a specific platform.
@@ -63,7 +83,7 @@ Available actions:
 - {"action":"scroll","direction":"up"|"down"} — scroll the page
 - {"action":"go_back"} — go back to previous page
 - {"action":"wait_human","message":"..."} — ask the human to solve a challenge (CAPTCHA, login). Use when you see a challenge you cannot solve.
-- {"action":"save_jobs","jobs":[...]} — save job listings you found. Each job: {"externalId":"...","title":"...","company":"...","location":"...","url":"...","description":"..."}. Use the job's URL or ID as externalId.
+- {"action":"save_jobs","jobs":[...]} — save job listings you found. Each job: {"externalId":"...","title":"...","company":"...","location":"...","url":"...","description":"...","postedAt":"..."}. postedAt is the date the offer was originally published on the platform (look for "Publicado hace X días", a date label on the card, or an absolute date near the title). Capture whichever form is visible — the ofertas page renders it next to the company/location so the user can see which offers are fresh. Use the job's URL or ID as externalId.
 - {"action":"done","summary":"..."} — you are finished. Summarize what you found.
 
 Rules:
@@ -81,7 +101,9 @@ Rules:
 12. When extracting jobs, scroll down to load more results if the page uses lazy loading or pagination.
 13. If the page has pagination, navigate through at least 2 pages of results per query.
 14. NEVER guess search-result URLs. Navigate ONLY to the platform homepage or to hrefs you actually see in the elements list. To search, use the page's own search input (type + press_enter) — guessing URLs wastes steps and usually fails.
-15. Your ONLY goal is to call save_jobs with real listings. Every step that doesn't move you toward visible job listings is wasted.`;
+15. Your ONLY goal is to call save_jobs with real listings. Every step that doesn't move you toward visible job listings is wasted.
+16. EXTRACT FROM THE SEARCH RESULTS CARDS. The visible job cards on a search results page already have title, company, location, and date. Do NOT click into individual job detail pages to extract more — Trabajando, Laborum, Computrabajo, Chiletrabajo, and similar sites require login to view job details, which will trigger login-required and end the scan. Save what you can see on the listing page.
+17. If the search results page shows a "ver más" / "siguiente" / pagination link, click it or use the next-page button rather than clicking into a job card. Clicking a job card is almost always the wrong move from a search results page.`;
 
 export function buildAgentPrompt(
   platform: string,
@@ -175,6 +197,11 @@ export async function runBrowserAgent(args: {
   headless?: boolean;
   storageState?: string;
   loginCredentials?: { email: string; password: string };
+  /** Pre-launched browser (real Chrome/Brave via CDP). When set, we use
+   * the browser's default context instead of launching Playwright's
+   * bundled Chromium. The cookies from the user's profile are already
+   * in that context. */
+  existingBrowser?: import('playwright').Browser;
   onJobsFound?: (jobs: BrowserAgentJob[]) => Promise<{ new: number; duplicate: number }>;
   onEvent?: (kind: string, message: string) => Promise<void>;
   onBlocked?: (reason: ChallengeKind | 'transport' | 'unknown', marker: string | null) => Promise<void>;
@@ -197,7 +224,26 @@ export async function runBrowserAgent(args: {
     headless: args.headless ?? false,
     storageState: args.storageState,
     approvedOrigin: new URL(platformUrl).origin,
+    existingBrowser: args.existingBrowser,
   });
+
+  // Diagnostic: report which browser context we ended up in. Helps the
+  // user understand when the agent's cookies are missing (e.g. they
+  // logged in to a window in context[3] but contexts[0] is empty).
+  if (args.existingBrowser) {
+    const contexts = args.existingBrowser.contexts();
+    const cookieSummary: string[] = [];
+    for (const ctx of contexts) {
+      try {
+        const cookies = await ctx.cookies();
+        cookieSummary.push(`ctx(${contexts.indexOf(ctx)}): ${cookies.length} cookies`);
+      } catch {
+        cookieSummary.push(`ctx(${contexts.indexOf(ctx)}): <unreadable>`);
+      }
+    }
+    await emit('agent_context_selected',
+      `Browser contexts: ${contexts.length}. ${cookieSummary.join('; ')}. Agent page created in the context with cookies for ${new URL(platformUrl).origin}.`);
+  }
 
   const messages: ChatMessage[] = [
     { role: 'system', content: SYSTEM_PROMPT },
