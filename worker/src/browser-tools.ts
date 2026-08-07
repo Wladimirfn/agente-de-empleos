@@ -5,6 +5,10 @@
  */
 
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
+import { existsSync } from 'fs';
+
+const BRAVE_PATH = 'C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe';
+const HAS_BRAVE = existsSync(BRAVE_PATH);
 
 export interface InteractiveElement {
   index: number;
@@ -105,6 +109,7 @@ export async function createBrowserTools(opts?: {
   const headless = opts?.headless ?? false;
   const browser: Browser = await chromium.launch({
     headless,
+    executablePath: HAS_BRAVE ? BRAVE_PATH : undefined,
     args: ['--disable-blink-features=AutomationControlled'],
   });
 
