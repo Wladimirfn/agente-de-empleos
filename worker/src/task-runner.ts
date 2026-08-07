@@ -2,7 +2,8 @@ import { claimNextTask, markCompleted, markFailed, markRetrying, TaskRow } from 
 import { isAppError, registry } from '@employment-agent/skill-runtime';
 import { DatabaseEventEmitter } from './event-emitter.js';
 import { createSkillContext } from '@employment-agent/skill-runtime';
-import { isApprovedOrigin } from './browser-tools.js';
+import { isApprovedOrigin, createBrowserTools, pickContextForOrigin } from './browser-tools.js';
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import type { CandidateProfile } from '@employment-agent/domain';
 import type { LLMProvider } from '@employment-agent/llm';
 import { db } from '@employment-agent/database';
@@ -500,9 +501,59 @@ export function registerBuiltinHandlers(): void {
     const queries = [...new Set([...targetRoles, ...shortSkills])].slice(0, 3);
     if (queries.length === 0) queries.push('mantención', 'refrigeración');
 
+    // Pick a real browser (Brave > Chrome > Edge > Comet). Real binary,
+    // real profile, real cookies = passes bot checks on ALL platforms.
+    const { detectAvailableBrowsers, pickDefaultBrowser, defaultProfileDir } = await import('./browser-detector.js');
+    const { launchBrowser, connectToBrowser, profileDirFor } = await import('./browser-launcher.js');
     const { runBrowserAgent } = await import('./browser-agent.js');
     const { loadCredentialPlaintext } = await import('@employment-agent/security');
     const credential = await loadCredentialPlaintext(payload.skillSlug);
+
+    // Prefer the user's existing browser instance (already running with
+    // CDP). If none, last resort: a dedicated profile.
+    // Order: existing CDP browser -> user default profile -> dedicated profile.
+    let existingBrowser: Browser | null = null;
+    let launchedProcess: { pid: number; cdpPort: number } | null = null;
+    let profileDir: string;
+    let usedExistingBrowser = false;
+    let browserInfo = pickDefaultBrowser();
+    if (!browserInfo) {
+      const available = detectAvailableBrowsers();
+      throw new Error(`No supported browser found. Install Brave, Chrome, Edge, or Comet. Detected: ${available.map((b) => b.id).join(', ') || 'none'}.`);
+    }
+
+    // 1) Try to connect to an already-running browser on 9222 (or next free port).
+    existingBrowser = await connectToBrowser();
+    if (existingBrowser) {
+      usedExistingBrowser = true;
+      // We don't know the exact profile dir of the running browser
+      profileDir = defaultProfileDir(browserInfo.id) ?? profileDirFor(payload.skillSlug, browserInfo.id);
+      await events.emit({
+        kind: 'agent_started',
+        message: `Conectado a ${browserInfo.id} ya abierto. Tus cookies y configuración están disponibles.`,
+        payload: { browser: browserInfo.id, slug: payload.skillSlug },
+      });
+    } else {
+      // 2) No existing browser. Use the user's default profile if available,
+      //    so cookies persist across restarts and the agent shares the
+      //    session with the user's manual browsing.
+      const userProfile = defaultProfileDir(browserInfo.id);
+      profileDir = userProfile ?? profileDirFor(payload.skillSlug, browserInfo.id);
+      const launched = await launchBrowser({
+        browserId: browserInfo.id,
+        binaryPath: browserInfo.binaryPath,
+        profileDir,
+      });
+      launchedProcess = launched;
+      // Connect Playwright to the browser we just launched.
+      existingBrowser = await chromium.connectOverCDP(`http://127.0.0.1:${launched.cdpPort}`);
+      await events.emit({
+        kind: 'agent_started',
+        message: `Lanzado ${browserInfo.id} con perfil dedicado en ${profileDir}.`,
+        payload: { browser: browserInfo.id, slug: payload.skillSlug, profileDir },
+      });
+    }
+
     const result = await runBrowserAgent({
       platform: payload.skillSlug,
       platformUrl: payload.platformUrl,
@@ -510,8 +561,9 @@ export function registerBuiltinHandlers(): void {
       profile,
       llm,
       headless: false, // Headed so user can solve CAPTCHAs
-      loginCredentials: credential ? { email: credential.email, password: credential.password } : undefined,
       storageState: credential?.storageState ?? undefined,
+      loginCredentials: credential ? { email: credential.email, password: credential.password } : undefined,
+      existingBrowser,
       onJobsFound: async (agentJobs) => {
         let newC = 0, dupC = 0;
         for (const job of agentJobs) {

@@ -175,6 +175,7 @@ export async function runBrowserAgent(args: {
   headless?: boolean;
   storageState?: string;
   loginCredentials?: { email: string; password: string };
+  existingBrowser?: import('playwright').Browser;
   onJobsFound?: (jobs: BrowserAgentJob[]) => Promise<{ new: number; duplicate: number }>;
   onEvent?: (kind: string, message: string) => Promise<void>;
   onBlocked?: (reason: ChallengeKind | 'transport' | 'unknown', marker: string | null) => Promise<void>;
@@ -197,6 +198,7 @@ export async function runBrowserAgent(args: {
     headless: args.headless ?? false,
     storageState: args.storageState,
     approvedOrigin: new URL(platformUrl).origin,
+    existingBrowser: args.existingBrowser,
   });
 
   const messages: ChatMessage[] = [

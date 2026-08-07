@@ -5,10 +5,6 @@
  */
 
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
-import { existsSync } from 'fs';
-
-const BRAVE_PATH = 'C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe';
-const HAS_BRAVE = existsSync(BRAVE_PATH);
 
 export interface InteractiveElement {
   index: number;
@@ -101,42 +97,155 @@ export function sanitizePageState(state: PageState): PageState {
   return sanitizeOutbound(state);
 }
 
+/**
+ * Pick the context that already has cookies for the approved origin.
+ * When the user runs the agent on multiple platforms from one browser,
+ * they may have multiple contexts (one per window profile / incognito
+ * / etc). contexts[0] is not guaranteed to be the one with the user's
+ * session. Falling back to the first context when no match is found
+ * keeps us connected to whatever Brave has.
+ *
+ * "Has cookies for the approved origin" = at least one cookie whose
+ * domain matches or is parent of the approved origin (e.g. cookie on
+ * `.trabajando.cl` matches origin `https://www.trabajando.cl`). This
+ * mirrors how Chrome scopes session cookies.
+ */
+export async function pickContextForOrigin(
+  browser: import('playwright').Browser,
+  contexts: BrowserContext[],
+  approvedOrigin: string | undefined,
+): Promise<BrowserContext> {
+  if (!approvedOrigin || contexts.length === 1) return contexts[0]!;
+  let originHost = '';
+  try {
+    originHost = new URL(approvedOrigin).hostname;
+  } catch {
+    return contexts[0]!;
+  }
+  for (const ctx of contexts) {
+    try {
+      const cookies = await ctx.cookies();
+      const hasMatch = cookies.some((c) => {
+        const domain = c.domain.replace(/^\./, '');
+        return domain === originHost || originHost.endsWith(`.${domain}`) || domain.endsWith(`.${originHost}`);
+      });
+      if (hasMatch) return ctx;
+    } catch {
+      // Some contexts may not expose cookies() over CDP — skip them.
+    }
+  }
+  return contexts[0]!;
+}
+
 export async function createBrowserTools(opts?: {
   headless?: boolean;
   storageState?: string;
   approvedOrigin?: string;
+  /**
+   * Use a pre-launched browser (e.g. real Chrome/Brave attached via
+   * CDP) instead of launching Playwright's bundled Chromium. When set,
+   * we reuse the browser's default context — that's where the cookies
+   * from the user-data-dir live.
+   */
+  existingBrowser?: Browser;
 }): Promise<BrowserAgentTools> {
   const headless = opts?.headless ?? false;
-  const browser: Browser = await chromium.launch({
+  const isAttached = Boolean(opts?.existingBrowser);
+  const browser: Browser = opts?.existingBrowser ?? await chromium.launch({
     headless,
-    executablePath: HAS_BRAVE ? BRAVE_PATH : undefined,
     args: ['--disable-blink-features=AutomationControlled'],
   });
 
-  const contextOptions: Record<string, unknown> = {
-    userAgent:
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-    locale: 'es-CL',
-    viewport: { width: 1280, height: 900 },
-  };
-  if (opts?.storageState) {
-    contextOptions.storageState = opts.storageState;
+  // For attached browsers, reuse the default context (one per profile).
+  // The cookies/IndexedDB from the user-data-dir are already there.
+  let context: BrowserContext;
+  let page: Page;
+  // Track every page WE opened so close() can shut down only what we
+  // created. Without this, context.close() would kill the user's localhost
+  // tab too, and browser.close() would kill their entire Brave.
+  const ownedPages: Page[] = [];
+  if (isAttached) {
+    const existing = browser.contexts();
+    if (existing.length === 0) {
+      // No contexts at all — shouldn't happen for a real browser, but
+      // bail out so we don't create a phantom context the user can't
+      // see.
+      throw new Error('Connected browser has no contexts');
+    }
+    // When the user has multiple windows/profiles open (e.g. one for
+    // localhost, another for an unrelated work session), contexts[0]
+    // may not be the one with cookies for the platform we're about to
+    // scan. The agent then lands on the anonymous homepage even though
+    // the user is logged in. Pick the context whose cookies cover the
+    // approved origin; fall back to contexts[0] when none does.
+    context = await pickContextForOrigin(browser, existing, opts?.approvedOrigin);
+    page = await context.newPage();
+    ownedPages.push(page);
+    // Track popups the AGENT triggers (`target=_blank`, OAuth
+    // callbacks, window.open() from the agent's page) so the route
+    // guard's `owner.close()` and our own `close()` only touch pages
+    // we opened. Without this, the route's
+    // "if (owner !== page) await owner.close()" closes the USER's
+    // own tabs (including their localhost tab) when they navigate to
+    // a non-approved origin in another tab. That was the cause of the
+    // "cierran su pestaña y me botan del localhost" symptom.
+    //
+    // Filter by `opener() === page`: only register popups that the
+    // agent's page opened. The user's own popups (Cmd+T, window.open
+    // from a user tab, target=_blank from a user page) are NOT agent
+    // popups and must remain off-limits. Subscribing to all pages
+    // would re-introduce a smaller variant of the original bug.
+    context.on('page', async (p) => {
+      try {
+        const opener = await p.opener();
+        if (opener === page) ownedPages.push(p);
+      } catch { /* detached before opener resolves — skip */ }
+    });
+  } else {
+    const contextOptions: Record<string, unknown> = {
+      userAgent:
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+      locale: 'es-CL',
+      viewport: { width: 1280, height: 900 },
+    };
+    if (opts?.storageState) {
+      contextOptions.storageState = opts.storageState;
+    }
+    context = await browser.newContext(contextOptions);
+    page = await context.newPage();
+    ownedPages.push(page);
   }
-
-  const context: BrowserContext = await browser.newContext(contextOptions);
-  const page: Page = await context.newPage();
   let policyBlocked = false;
   let lastApprovedUrl = opts?.approvedOrigin ?? '';
   if (opts?.approvedOrigin) {
     await context.route('**/*', async (route) => {
       const request = route.request();
-      const navigation = request.isNavigationRequest();
+      // Only enforce the approved-origin policy on top-level navigation
+      // (HTML document requests). Sub-resources (CSS / JS / fonts / images /
+      // XHR) MUST load so the page renders correctly — without CSS Indeed
+      // (and most platforms) render as a wall of left-aligned text.
+      //
+      // The `route.fetch + route.fulfill` dance below also breaks sub-
+      // resource bodies in some Playwright builds (the fetch stream is
+      // consumed before fulfill), so we just pass sub-resources through
+      // unmodified with `route.continue()`.
+      if (!request.isNavigationRequest()) return route.continue();
       const block = async () => {
-        if (navigation) policyBlocked = true;
+        policyBlocked = true;
         await route.abort('blockedbyclient');
-        if (navigation) try {
+        try {
           const owner = request.frame().page();
-          if (owner !== page) await owner.close();
+          // Only close the owner if it's a page WE created. In the
+          // attached-to-existing-browser path, the route runs on a
+          // context that also contains the user's tabs (their
+          // localhost tab, their work tabs, etc.) — closing any of
+          // those was the cause of the "me botan del localhost" bug.
+          // User-owned tabs are off-limits: the agent only navigates
+          // its own pages and is the only one responsible for closing
+          // popups it opened.
+          if (owner && ownedPages.includes(owner) && owner !== page) {
+            await owner.close();
+          }
         } catch { /* detached popup/frame */ }
       };
       if (!isApprovedOrigin(request.url(), opts.approvedOrigin!)) return block();
@@ -365,8 +474,18 @@ export async function createBrowserTools(opts?: {
     },
 
     async close(): Promise<void> {
-      await context.close().catch(() => undefined);
-      await browser.close().catch(() => undefined);
+      // Only shut down what WE opened. If the agent attached to the
+      // user's existing Brave via CDP (existingBrowser), the context and
+      // browser belong to the user — closing them would kill the user's
+      // localhost tab and the whole browser. Closing our owned pages
+      // leaves the user with one less tab and otherwise everything intact.
+      for (const p of ownedPages) {
+        await p.close().catch(() => undefined);
+      }
+      if (!isAttached) {
+        await context.close().catch(() => undefined);
+        await browser.close().catch(() => undefined);
+      }
     },
   };
 }
