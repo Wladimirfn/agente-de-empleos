@@ -18,6 +18,12 @@ export const platformCredentials = sqliteTable('platform_credentials', {
   consentAt: text('consent_at').notNull(),
   createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text('updated_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+  /** Which browser the user logged in with (brave, chrome, edge, comet). */
+  browserId: text('browser_id'),
+  /** Absolute path to the browser executable. NOT a secret. */
+  browserPath: text('browser_path'),
+  /** Path to the user-data-dir that holds this platform's cookies/session. */
+  profilePath: text('profile_path'),
 }, (t) => ({
   slugUnique: uniqueIndex('platform_credentials_slug_unique').on(t.slug),
 }));

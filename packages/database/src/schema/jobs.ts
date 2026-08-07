@@ -13,6 +13,8 @@ export const jobs = sqliteTable('jobs', {
   url: text('url'),
   description: text('description'),
   rawPayload: text('raw_payload'),
+  /** ISO-8601 timestamp the job was published on the platform. Optional — not all platforms expose it. */
+  postedAt: text('posted_at'),
   firstSeenAt: text('first_seen_at').notNull().default(sql`CURRENT_TIMESTAMP`),
   lastSeenAt: text('last_seen_at').notNull().default(sql`CURRENT_TIMESTAMP`),
   hash: text('hash'),

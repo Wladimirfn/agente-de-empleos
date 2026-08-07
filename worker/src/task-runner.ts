@@ -26,19 +26,19 @@ async function loadLLM(): Promise<LLMProvider> {
 }
 
 /** Ensure a platform row exists and return its id. */
-async function ensurePlatform(slug: string, displayName: string): Promise<number> {
+async function ensurePlatform(slug: string, displayName: string, baseUrl?: string): Promise<number> {
   const existing = await db.select().from(platforms).where(eq(platforms.slug, slug)).limit(1);
   if (existing[0]) return existing[0].id;
   const inserted = await db
     .insert(platforms)
-    .values({ slug, displayName, status: 'active' })
+    .values({ slug, displayName, baseUrl: baseUrl ?? null, status: 'active' })
     .returning({ id: platforms.id });
   return inserted[0]!.id;
 }
 
 /** Insert a job if it doesn't exist, or bump lastSeenAt if it does. Returns 'new' | 'duplicate'. */
 async function persistJob(platformId: number, job: {
-  externalId: string; title: string; company?: string; location?: string; url?: string; description?: string;
+  externalId: string; title: string; company?: string; location?: string; url?: string; description?: string; postedAt?: string;
 }): Promise<'new' | 'duplicate'> {
   const existing = await db
     .select({ id: jobs.id })
@@ -57,6 +57,7 @@ async function persistJob(platformId: number, job: {
     location: job.location ?? null,
     url: job.url ?? null,
     description: job.description ?? null,
+    postedAt: job.postedAt ?? null,
   });
   return 'new';
 }
@@ -369,6 +370,38 @@ export function registerBuiltinHandlers(): void {
   };
   registerHandler('CAPTURE_SESSION', captureSession);
 
+  registerHandler('LAUNCH_BROWSER', async (task) => {
+    const payload = JSON.parse(task.payloadJson) as { browserId?: string };
+    const { detectAvailableBrowsers, pickDefaultBrowser, findBrowser, defaultProfileDir } = await import('./browser-detector.js');
+    const { launchBrowser } = await import('./browser-launcher.js');
+
+    const browser = payload.browserId
+      ? findBrowser(payload.browserId as Parameters<typeof findBrowser>[0])
+      : pickDefaultBrowser();
+    if (!browser) {
+      const available = detectAvailableBrowsers();
+      throw new Error(
+        `No supported browser found. Install Brave, Chrome, Edge, or Comet. Detected: ${available.map((b) => b.id).join(', ') || 'none'}.`
+      );
+    }
+
+    const profileDir = defaultProfileDir(browser.id);
+    if (!profileDir) {
+      throw new Error(`No default profile dir for ${browser.id} on this OS.`);
+    }
+
+    const launched = await launchBrowser({
+      browserId: browser.id,
+      binaryPath: browser.binaryPath,
+      profileDir,
+    });
+    await events.emit({
+      kind: 'launch_browser_success',
+      message: `${browser.id} launched with debug port ${launched.cdpPort}.`,
+      payload: { browser: browser.id, port: launched.cdpPort, profileDir },
+    });
+  });
+
   registerHandler('SCAN_ACTIVE_PLATFORMS', async (task) => {
     const payload = JSON.parse(task.payloadJson) as { triggeredBy?: string };
     const skills = registry.list();
@@ -389,7 +422,8 @@ export function registerBuiltinHandlers(): void {
       throw new Error(`Skill not found: ${payload.skillSlug}`);
     }
     const profile = await loadWorkerProfile();
-    const platformId = await ensurePlatform(skill.slug, skill.displayName);
+    const { platformUrlForSlug } = await import('./platform-urls.js');
+    const platformId = await ensurePlatform(skill.slug, skill.displayName, platformUrlForSlug(skill.slug));
 
     // Wrap the event emitter to intercept job_found events and persist them.
     let newCount = 0;
@@ -448,14 +482,12 @@ export function registerBuiltinHandlers(): void {
         payload: { skillSlug: skill.slug, error: errMsg },
       });
       const { enqueueTask } = await import('./task-queue.js');
+      const { platformUrlForSlug } = await import('./platform-urls.js');
       await enqueueTask({
         type: 'BROWSER_AGENT_SCAN',
         payload: {
           skillSlug: skill.slug,
-          platformUrl: skill.slug === 'laborum' ? 'https://www.laborum.cl'
-            : skill.slug === 'computrabajo' ? 'https://www.computrabajo.cl'
-            : skill.slug === 'indeed' ? 'https://cl.indeed.com'
-            : `https://www.${skill.slug}.cl`,
+          platformUrl: platformUrlForSlug(skill.slug),
           triggeredBy: 'skill-fallback',
           originalError: errMsg.slice(0, 200),
         },
@@ -501,57 +533,92 @@ export function registerBuiltinHandlers(): void {
     const queries = [...new Set([...targetRoles, ...shortSkills])].slice(0, 3);
     if (queries.length === 0) queries.push('mantención', 'refrigeración');
 
-    // Pick a real browser (Brave > Chrome > Edge > Comet). Real binary,
-    // real profile, real cookies = passes bot checks on ALL platforms.
-    const { detectAvailableBrowsers, pickDefaultBrowser, defaultProfileDir } = await import('./browser-detector.js');
-    const { launchBrowser, connectToBrowser, profileDirFor } = await import('./browser-launcher.js');
+    // Attach to a real browser. Three escalating strategies, in order:
+    //
+    //   1. CDP attach to whatever is already listening on 9222. This is
+    //      the `npm run launch:brave` flow — user ran the launcher,
+    //      has their normal Brave session with their cookies, the worker
+    //      just connects. Works even WITHOUT a captured credential.
+    //
+    //   2. Launch a dedicated instance with the captured profile path
+    //      (from a previous CAPTURE_SESSION). This is what makes the
+    //      session survive a worker restart — profile has cookies.
+    //
+    //   3. Playwright's bundled Chromium. Last resort: Google will
+    //      detect the TLS fingerprint and block login flows.
+    //
+    // Step 1 used to be gated on credential.browserPath existing, which
+    // meant the user's first scan after install always fell through to
+    // step 3 and failed. The condition was wrong: launching Brave via
+    // npm run launch:brave is independent of whether any platform has
+    // a captured credential yet.
+    let realBrowser: import('playwright').Browser | null = null;
+    let browserProc: { pid: number; cdpPort: number } | null = null;
     const { runBrowserAgent } = await import('./browser-agent.js');
     const { loadCredentialPlaintext } = await import('@employment-agent/security');
+    const { detectAvailableBrowsers, findBrowser } = await import('./browser-detector.js');
+    const { launchBrowser, connectToBrowser, profileDirFor } = await import('./browser-launcher.js');
+    const { chromium } = await import('playwright');
     const credential = await loadCredentialPlaintext(payload.skillSlug);
 
-    // Prefer the user's existing browser instance (already running with
-    // CDP). If none, last resort: a dedicated profile.
-    // Order: existing CDP browser -> user default profile -> dedicated profile.
-    let existingBrowser: Browser | null = null;
-    let launchedProcess: { pid: number; cdpPort: number } | null = null;
-    let profileDir: string;
-    let usedExistingBrowser = false;
-    let browserInfo = pickDefaultBrowser();
-    if (!browserInfo) {
-      const available = detectAvailableBrowsers();
-      throw new Error(`No supported browser found. Install Brave, Chrome, Edge, or Comet. Detected: ${available.map((b) => b.id).join(', ') || 'none'}.`);
+    // Strategy 1: attach to the already-running CDP browser.
+    try {
+      realBrowser = await connectToBrowser();
+      if (realBrowser) {
+        await events.emit({
+          kind: 'real_browser_attached',
+          message: `Conectado al navegador ya corriendo vía CDP (perfil del usuario).`,
+          payload: { source: 'cdp-existing', slug: payload.skillSlug },
+        });
+      } else {
+        // connectToBrowser returns null when the probe finds no CDP
+        // endpoint on port 9222 — the common case when the user has
+        // the browser open but without --remote-debugging-port. The
+        // agent silently falls through to the next strategy and the
+        // user gets no actionable feedback. Emit the same event the
+        // exception path emits, with the canonical "open without CDP"
+        // diagnostic so the UI can show it. (Launch-brave.mjs prints
+        // the same instructions when it hits the same case.)
+        await events.emit({
+          kind: 'real_browser_attach_error',
+          message: 'No hay navegador con CDP en el puerto 9222. Si tenés el navegador abierto, cerrá todas las ventanas y re-ejecutá npm run dev, o usá el botón "Lanzar Brave" en /configuracion para abrirlo con debug port.',
+          payload: { reason: 'no-cdp-on-9222', slug: payload.skillSlug },
+        });
+      }
+    } catch (err) {
+      // connectToBrowser returns null on failure; this catch is for the
+      // unexpected case where connectOverCDP itself throws.
+      await events.emit({
+        kind: 'real_browser_attach_error',
+        message: `CDP attach falló: ${err instanceof Error ? err.message : String(err)}`,
+      });
     }
 
-    // 1) Try to connect to an already-running browser on 9222 (or next free port).
-    existingBrowser = await connectToBrowser();
-    if (existingBrowser) {
-      usedExistingBrowser = true;
-      // We don't know the exact profile dir of the running browser
-      profileDir = defaultProfileDir(browserInfo.id) ?? profileDirFor(payload.skillSlug, browserInfo.id);
-      await events.emit({
-        kind: 'agent_started',
-        message: `Conectado a ${browserInfo.id} ya abierto. Tus cookies y configuración están disponibles.`,
-        payload: { browser: browserInfo.id, slug: payload.skillSlug },
-      });
-    } else {
-      // 2) No existing browser. Use the user's default profile if available,
-      //    so cookies persist across restarts and the agent shares the
-      //    session with the user's manual browsing.
-      const userProfile = defaultProfileDir(browserInfo.id);
-      profileDir = userProfile ?? profileDirFor(payload.skillSlug, browserInfo.id);
-      const launched = await launchBrowser({
-        browserId: browserInfo.id,
-        binaryPath: browserInfo.binaryPath,
-        profileDir,
-      });
-      launchedProcess = launched;
-      // Connect Playwright to the browser we just launched.
-      existingBrowser = await chromium.connectOverCDP(`http://127.0.0.1:${launched.cdpPort}`);
-      await events.emit({
-        kind: 'agent_started',
-        message: `Lanzado ${browserInfo.id} con perfil dedicado en ${profileDir}.`,
-        payload: { browser: browserInfo.id, slug: payload.skillSlug, profileDir },
-      });
+    // Strategy 2: launch a dedicated browser with the captured profile.
+    if (!realBrowser && credential?.browserPath && credential?.profilePath) {
+      const browser = findBrowser((credential.browserId ?? 'brave') as Parameters<typeof findBrowser>[0]);
+      if (browser) {
+        try {
+          const launched = await launchBrowser({
+            browserId: browser.id,
+            binaryPath: credential.browserPath,
+            profileDir: credential.profilePath,
+          });
+          browserProc = launched;
+          realBrowser = await chromium.connectOverCDP(`http://127.0.0.1:${launched.cdpPort}`);
+          await events.emit({
+            kind: 'real_browser_attached',
+            message: `Lanzado ${browser.id} con perfil guardado de ${payload.skillSlug}.`,
+            payload: { browser: browser.id, slug: payload.skillSlug },
+          });
+        } catch (err) {
+          await events.emit({
+            kind: 'real_browser_fallback',
+            message: `Falló launch dedicado. Usando lo que haya disponible. ${err instanceof Error ? err.message : String(err)}`,
+          });
+          realBrowser = null;
+        }
+      }
     }
 
     const result = await runBrowserAgent({
@@ -561,9 +628,9 @@ export function registerBuiltinHandlers(): void {
       profile,
       llm,
       headless: false, // Headed so user can solve CAPTCHAs
-      storageState: credential?.storageState ?? undefined,
       loginCredentials: credential ? { email: credential.email, password: credential.password } : undefined,
-      existingBrowser,
+      storageState: credential?.storageState ?? undefined,
+      existingBrowser: realBrowser ?? undefined,
       onJobsFound: async (agentJobs) => {
         let newC = 0, dupC = 0;
         for (const job of agentJobs) {
@@ -574,6 +641,7 @@ export function registerBuiltinHandlers(): void {
             location: job.location,
             url: job.url,
             description: job.description,
+            postedAt: job.postedAt,
           });
           if (r === 'new') newC++; else dupC++;
         }

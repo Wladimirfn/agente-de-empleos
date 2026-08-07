@@ -14,6 +14,8 @@ export interface CredentialSummary {
   lastLoginStatus: LoginStatus;
   consentAt: string;
   updatedAt: string;
+  browserId: string | null;
+  profilePath: string | null;
 }
 
 export interface CredentialPlaintext {
@@ -21,6 +23,9 @@ export interface CredentialPlaintext {
   email: string;
   password: string;
   storageState: string | null;
+  browserId: string | null;
+  browserPath: string | null;
+  profilePath: string | null;
 }
 
 /**
@@ -37,6 +42,8 @@ export async function listCredentials(): Promise<CredentialSummary[]> {
     lastLoginStatus: row.lastLoginStatus,
     consentAt: row.consentAt,
     updatedAt: row.updatedAt,
+    browserId: row.browserId,
+    profilePath: row.profilePath,
   }));
 }
 
@@ -96,6 +103,9 @@ export async function loadCredentialPlaintext(slug: string): Promise<CredentialP
     email: decrypt(row.emailCipher, key),
     password: decrypt(row.passwordCipher, key),
     storageState: row.storageStateCipher ? decrypt(row.storageStateCipher, key) : null,
+    browserId: row.browserId,
+    browserPath: row.browserPath,
+    profilePath: row.profilePath,
   };
 }
 
@@ -106,11 +116,74 @@ export async function recordLoginStatus(slug: string, status: LoginStatus): Prom
     .where(eq(platformCredentials.slug, slug));
 }
 
+/**
+ * The capture flow has no email/password (the user logged in via
+ * OAuth or 2FA). We need placeholder values so the row can be inserted
+ * with the existing schema (emailCipher and passwordCipher are NOT NULL).
+ * The placeholder email encodes the slug so the user can tell which row
+ * corresponds to which platform; the placeholder password is opaque.
+ * The actual credential is the storage state — the agent never uses
+ * the placeholder email/password.
+ */
+function capturePlaceholders(slug: string, key: Buffer): { emailCipher: string; passwordCipher: string } {
+  return {
+    emailCipher: encrypt(`capture+${slug}@placeholder.local`, key),
+    passwordCipher: encrypt(`capture-placeholder-${slug}`, key),
+  };
+}
+
 export async function persistStorageState(slug: string, storageState: string): Promise<void> {
   const key = await getOrCreateMasterKey();
   const storageStateCipher = encrypt(storageState, key);
+  const ph = capturePlaceholders(slug, key);
   const now = new Date().toISOString();
-  await db.update(platformCredentials)
-    .set({ storageStateCipher, updatedAt: now })
-    .where(eq(platformCredentials.slug, slug));
+  // Upsert: the capture flow usually creates a row that didn't exist
+  // before (no email/password was ever saved). INSERT OR REPLACE so the
+  // row is created if missing, updated if it exists.
+  await db.insert(platformCredentials)
+    .values({
+      slug,
+      storageStateCipher,
+      emailCipher: ph.emailCipher,
+      passwordCipher: ph.passwordCipher,
+      consentAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: platformCredentials.slug,
+      set: { storageStateCipher, updatedAt: now },
+    });
+}
+
+/**
+ * Save the browser profile (typically the user-data-dir path) for a
+ * platform. Used by the session capture flow after the user logs in.
+ * The proxy for "is the user logged in on this platform" is the
+ * existence of the profile dir; we don't need to encrypt the path
+ * itself since it's not a secret.
+ */
+export async function persistBrowserProfile(
+  slug: string,
+  browserId: string,
+  browserPath: string,
+  profilePath: string,
+): Promise<void> {
+  const key = await getOrCreateMasterKey();
+  const ph = capturePlaceholders(slug, key);
+  const now = new Date().toISOString();
+  await db.insert(platformCredentials)
+    .values({
+      slug,
+      browserId,
+      browserPath,
+      profilePath,
+      emailCipher: ph.emailCipher,
+      passwordCipher: ph.passwordCipher,
+      consentAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: platformCredentials.slug,
+      set: { browserId, browserPath, profilePath, updatedAt: now },
+    });
 }

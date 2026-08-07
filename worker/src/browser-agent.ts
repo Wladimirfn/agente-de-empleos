@@ -32,6 +32,7 @@ export interface BrowserAgentJob {
   location?: string;
   url?: string;
   description?: string;
+  postedAt?: string;
 }
 
 const MAX_STEPS = 25;
