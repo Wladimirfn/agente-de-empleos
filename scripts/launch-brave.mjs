@@ -108,6 +108,63 @@ async function isCDPAvailable(port) {
 }
 
 /**
+ * On Windows: resolve the PID listening on `port` via
+ * `netstat -ano | findstr :<port>`, then fetch its command line via
+ * `wmic`, and check whether it contains EVERY flag in
+ * `FLAGS_BY_BROWSER[browserId]`. Returns true when the running browser
+ * has the flags this script would have applied; false when CDP is up
+ * but the browser was launched manually (wrong-flags case) or the OS
+ * query failed. Non-Windows short-circuits to true (out of scope).
+ *
+ * Used by main() to turn the silent "Brave already running with CDP"
+ * case into a clear warning that tells the user to close Brave and
+ * re-run `npm run launch:brave`. The worker-side check in
+ * worker/src/browser-launcher.ts is the source of truth at scan time;
+ * this is the upfront pre-flight that prevents the user from
+ * launching the dev server only to hit the failure later.
+ */
+async function runningBrowserHasRequiredFlags(browserId, port) {
+  if (platform() !== 'win32') return true;
+  const required = FLAGS_BY_BROWSER[browserId] ?? [];
+  // Non-Brave browsers (chrome/edge/comet) have no shield flags to
+  // verify; trivially valid.
+  if (required.length === 0) return true;
+
+  let pid = null;
+  try {
+    const out = execSync(`netstat -ano | findstr :${port}`, { encoding: 'utf8' });
+    for (const line of out.split(/\r?\n/)) {
+      if (!/\bLISTENING\b/i.test(line)) continue;
+      const cols = line.trim().split(/\s+/);
+      const candidate = cols[cols.length - 1];
+      if (candidate && /^\d+$/.test(candidate)) {
+        pid = candidate;
+        break;
+      }
+    }
+  } catch {
+    // findstr exits 1 when no lines match. Treat as "can't confirm".
+    return false;
+  }
+  if (!pid) return false;
+
+  let commandLine = '';
+  try {
+    const out = execSync(
+      `wmic process where "ProcessId=${pid}" get CommandLine /format:list`,
+      { encoding: 'utf8', timeout: 5_000 },
+    );
+    const m = out.match(/CommandLine=([\s\S]*?)\r?\n\r?\n/);
+    if (m) commandLine = m[1].trim().replace(/^"|"$/g, '');
+  } catch {
+    return false;
+  }
+  if (!commandLine) return false;
+
+  return required.every((flag) => commandLine.includes(flag));
+}
+
+/**
  * Detect if a browser is ALREADY running on the system (with or without
  * CDP). If it is, launching a second instance causes two browsers to
  * coexist — the new one with the shield-disable flags we want, and the
@@ -235,8 +292,43 @@ async function main() {
     process.exit(1);
   }
 
+  // Process-executable name per OS, used in the "close Brave" warnings.
+  // Hoisted to the top of main() so it's available before both the
+  // CDP-flag check and the no-debug-port check below.
+  const exeNames = {
+    win32: { brave: 'brave.exe', chrome: 'chrome.exe', edge: 'msedge.exe', comet: 'comet.exe' },
+    darwin: { brave: 'Brave Browser', chrome: 'Google Chrome', edge: 'Microsoft Edge', comet: 'Comet' },
+    linux: { brave: 'brave-browser', chrome: 'chrome', edge: 'msedge', comet: 'comet' },
+  };
+  const exe = exeNames[os]?.[browserId] ?? browserId;
+
   if (await isCDPAvailable(port)) {
-    console.log(`Browser already running with CDP on port ${port}. Nothing to do.`);
+    // CDP endpoint is up. Two cases:
+    //   - The browser was launched by THIS script in a previous run
+    //     (has the right flags) → nothing to do.
+    //   - The user opened the browser manually with --remote-debugging-port
+    //     but without --disable-brave-shields (the "wrongly launched"
+    //     failure mode). The agent would attach to it and silently break
+    //     (localhost blocked by shields, Indeed pages half-rendered).
+    //     Detect this on Windows via wmic and tell the user to close
+    //     the browser before re-running us, so the new launch applies
+    //     the correct flags.
+    const hasFlags = await runningBrowserHasRequiredFlags(browserId, port);
+    if (hasFlags) {
+      console.log(`Browser already running with CDP on port ${port}. Nothing to do.`);
+      process.exit(0);
+    }
+    console.warn(`\nWARNING: a browser is already running with CDP on port ${port} but without`);
+    console.warn(`the Brave Shields disable flags (--disable-brave-shields). It was probably`);
+    console.warn(`opened manually, and the agent can't attach to it cleanly.`);
+    console.warn('The dev server will still start, but the scan will fail until you:');
+    console.warn('');
+    console.warn(`  • close every ${browserId} window`);
+    console.warn(`  • (Task Manager → "${exe}" → End task if any orphan stays.)`);
+    console.warn(`  • re-run \`npm run launch:brave\` (or \`npm run dev\`)`);
+    console.warn('');
+    console.warn(`Or just let it run — the scan will detect the same situation and show the`);
+    console.warn(`same instructions in the UI.`);
     process.exit(0);
   }
 
@@ -246,12 +338,6 @@ async function main() {
   // the old one with default shields ON — exactly the "localhost
   // blocked" + "agent doesn't work" failure mode. Refuse and tell the
   // user what to do.
-  const exeNames = {
-    win32: { brave: 'brave.exe', chrome: 'chrome.exe', edge: 'msedge.exe', comet: 'comet.exe' },
-    darwin: { brave: 'Brave Browser', chrome: 'Google Chrome', edge: 'Microsoft Edge', comet: 'Comet' },
-    linux: { brave: 'brave-browser', chrome: 'chrome', edge: 'msedge', comet: 'comet' },
-  };
-  const exe = exeNames[os]?.[browserId] ?? browserId;
   if (await isBrowserProcessRunning(browserId)) {
     // Common state: the user has ${browserId} open from a previous
     // session without --remote-debugging-port. Two coexisting browsers

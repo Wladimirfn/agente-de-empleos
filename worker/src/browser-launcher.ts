@@ -220,14 +220,102 @@ export async function launchBrowser(opts: LaunchOptions): Promise<{ pid: number;
   );
 }
 
+export interface FlagsValidation {
+  valid: boolean;
+  /** Best-effort command line we read from the OS. Empty when unavailable. */
+  commandLine: string;
+  /** Why we reached the verdict. `'ok'` only when `valid` is true. */
+  reason: 'ok' | 'no-process-listening' | 'no-commandline' | 'missing-shield-flag' | 'platform-unsupported';
+}
+
+/**
+ * On Windows: resolves the PID listening on `cdpPort` via
+ * `netstat -ano | findstr :<port>`, fetches its command line via
+ * `wmic process where "ProcessId=<pid>" get CommandLine /format:list`,
+ * and checks that BOTH `--disable-brave-shields` AND
+ * `--disable-features=BraveShields` are present.
+ *
+ * The "wrongly launched browser" failure mode the user reported is:
+ * Brave opens with `--remote-debugging-port` but WITHOUT the shield
+ * flags → localhost gets blocked by shields, the Astro UI can't load,
+ * Indeed pages render half-empty, the agent silently breaks. Returning
+ * `valid: false` here lets `connectToBrowser` refuse to attach so the
+ * task-runner can surface a clear diagnostic.
+ *
+ * Mac/Linux are intentionally out of scope per the issue; on those
+ * platforms we short-circuit to `valid: true` so non-Windows callers
+ * see no behavior change.
+ */
+export async function validateBrowserFlags(cdpPort: number = DEFAULT_CDP_PORT): Promise<FlagsValidation> {
+  if (process.platform !== 'win32') {
+    return { valid: true, commandLine: '', reason: 'platform-unsupported' };
+  }
+
+  // 1. Find the PID listening on the CDP port.
+  let pid: string | null = null;
+  try {
+    const { stdout } = await execAsync(`netstat -ano | findstr :${cdpPort}`);
+    for (const line of stdout.split(/\r?\n/)) {
+      if (!/\bLISTENING\b/i.test(line)) continue;
+      const cols = line.trim().split(/\s+/);
+      const candidate = cols[cols.length - 1];
+      if (candidate && /^\d+$/.test(candidate)) {
+        pid = candidate;
+        break;
+      }
+    }
+  } catch {
+    // findstr returns exit 1 when no lines match. Treat that as
+    // "no process listening on that port" — same as probeCDP failing.
+    return { valid: false, commandLine: '', reason: 'no-process-listening' };
+  }
+  if (!pid) {
+    return { valid: false, commandLine: '', reason: 'no-process-listening' };
+  }
+
+  // 2. Look up the command line for that PID. wmic output looks like:
+  //      CommandLine="...the actual command line..."
+  //      (blank line)
+  let commandLine = '';
+  try {
+    const { stdout } = await execAsync(
+      `wmic process where "ProcessId=${pid}" get CommandLine /format:list`,
+      { timeout: 5_000 },
+    );
+    const m = stdout.match(/CommandLine=([\s\S]*?)\r?\n\r?\n/);
+    if (m) commandLine = m[1]!.trim().replace(/^"|"$/g, '');
+  } catch {
+    return { valid: false, commandLine: '', reason: 'no-commandline' };
+  }
+  if (!commandLine) {
+    return { valid: false, commandLine: '', reason: 'no-commandline' };
+  }
+
+  // 3. Both flags must be present. The `--disable-features=` value
+  // includes several comma-separated Brave internals; we check the
+  // prefix so the rest of the list can evolve without breaking us.
+  const hasShieldFlag = commandLine.includes('--disable-brave-shields');
+  const hasDisableFeature = commandLine.includes('--disable-features=BraveShields');
+  if (!hasShieldFlag || !hasDisableFeature) {
+    return { valid: false, commandLine, reason: 'missing-shield-flag' };
+  }
+  return { valid: true, commandLine, reason: 'ok' };
+}
+
 /**
  * Connects to a browser that's already running with --remote-debugging-port.
  * Used when the user opens Chrome manually or when a previous capture
  * left the browser running. Returns null if nothing is listening on
- * the given port.
+ * the given port OR if the running browser was launched without the
+ * shield-disable flags the agent needs (see `validateBrowserFlags`).
  */
 export async function connectToBrowser(cdpPort: number = DEFAULT_CDP_PORT): Promise<Browser | null> {
   if (!(await probeCDP(cdpPort))) return null;
+  // Refuse to attach to a wrongly-launched browser. On Windows this
+  // means Brave opened manually with --remote-debugging-port but
+  // WITHOUT --disable-brave-shields — the user's reported failure
+  // mode. On Mac/Linux validateBrowserFlags short-circuits to valid.
+  if (!(await validateBrowserFlags(cdpPort)).valid) return null;
   // Try 127.0.0.1 first, then localhost, since connectOverCDP needs a
   // working endpoint. The browser is reachable on either, so we just
   // pick the one that works.

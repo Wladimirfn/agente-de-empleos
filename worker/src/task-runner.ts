@@ -557,7 +557,7 @@ export function registerBuiltinHandlers(): void {
     const { runBrowserAgent } = await import('./browser-agent.js');
     const { loadCredentialPlaintext } = await import('@employment-agent/security');
     const { detectAvailableBrowsers, findBrowser } = await import('./browser-detector.js');
-    const { launchBrowser, connectToBrowser, profileDirFor } = await import('./browser-launcher.js');
+    const { launchBrowser, connectToBrowser, profileDirFor, validateBrowserFlags } = await import('./browser-launcher.js');
     const { chromium } = await import('playwright');
     const credential = await loadCredentialPlaintext(payload.skillSlug);
 
@@ -571,19 +571,30 @@ export function registerBuiltinHandlers(): void {
           payload: { source: 'cdp-existing', slug: payload.skillSlug },
         });
       } else {
-        // connectToBrowser returns null when the probe finds no CDP
-        // endpoint on port 9222 — the common case when the user has
-        // the browser open but without --remote-debugging-port. The
-        // agent silently falls through to the next strategy and the
-        // user gets no actionable feedback. Emit the same event the
-        // exception path emits, with the canonical "open without CDP"
-        // diagnostic so the UI can show it. (Launch-brave.mjs prints
-        // the same instructions when it hits the same case.)
-        await events.emit({
-          kind: 'real_browser_attach_error',
-          message: 'No hay navegador con CDP en el puerto 9222. Si tenés el navegador abierto, cerrá todas las ventanas y re-ejecutá npm run dev, o usá el botón "Lanzar Brave" en /configuracion para abrirlo con debug port.',
-          payload: { reason: 'no-cdp-on-9222', slug: payload.skillSlug },
-        });
+        // connectToBrowser returns null in two distinct failure modes
+        // that need different instructions:
+        //   - No CDP endpoint at all (probe failed before validation).
+        //     Tell the user to launch Brave.
+        //   - CDP endpoint is up but the running browser was launched
+        //     without --disable-brave-shields (Windows validation
+        //     rejected it). Tell the user to close Brave and re-run
+        //     npm run launch:brave so the launch script applies the
+        //     correct flags. validateBrowserFlags() is the source of
+        //     truth for which one we're in.
+        const validation = await validateBrowserFlags();
+        if (!validation.valid && validation.reason === 'missing-shield-flag') {
+          await events.emit({
+            kind: 'real_browser_attach_error',
+            message: 'Brave está corriendo en el puerto 9222 pero sin --disable-brave-shields (los Shields bloquean localhost y la página de Indeed queda a medio renderizar). Cerrá todas las ventanas de Brave y re-ejecutá npm run launch:brave.',
+            payload: { reason: 'wrong-flags', slug: payload.skillSlug, commandLine: validation.commandLine },
+          });
+        } else {
+          await events.emit({
+            kind: 'real_browser_attach_error',
+            message: 'No hay navegador con CDP en el puerto 9222. Si tenés el navegador abierto, cerrá todas las ventanas y re-ejecutá npm run dev, o usá el botón "Lanzar Brave" en /configuracion para abrirlo con debug port.',
+            payload: { reason: 'no-cdp-on-9222', slug: payload.skillSlug },
+          });
+        }
       }
     } catch (err) {
       // connectToBrowser returns null on failure; this catch is for the
