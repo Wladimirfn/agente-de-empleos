@@ -22,8 +22,8 @@ export interface RetryOptions {
 /**
  * Run an async function with bounded exponential backoff on transient
  * SQLite lock errors. Other errors propagate immediately (single
- * attempt). Logs every retried attempt to stderr; throws after the
- * budget is exhausted.
+ * attempt). Logs the final failure after all retries exhausted; throws
+ * after the budget is exhausted.
  */
 export async function runWithLockRetry<T>(
   fn: () => Promise<T>,

@@ -72,18 +72,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  // Differentiate fatal (process can't run) from transient (we'd loop
-  // forever). The retry logic inside runMigrations() already absorbs
-  // SQLITE_BUSY; if it still throws here, the database is genuinely
-  // broken — exit so the supervisor (`concurrently`) can restart.
-  const message = err instanceof Error ? err.message : String(err);
-  const isTransient = /SQLITE_BUSY|database is locked/i.test(message);
-  console.error('[worker] boot failed:', err);
-  if (isTransient) {
-    console.error('[worker] transient boot error; exiting so supervisor can restart');
-  } else {
-    console.error('[worker] fatal boot error; exiting');
-  }
+  console.error('[worker] fatal boot error:', err);
   removePidFile();
-  process.exit(isTransient ? 2 : 1);
+  process.exit(1); // no process supervisor distinguishes exit codes; re-introduce when one exists
 });
